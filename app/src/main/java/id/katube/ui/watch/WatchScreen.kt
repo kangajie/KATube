@@ -215,6 +215,10 @@ fun WatchScreen(
     val uploaderSubscriberText by viewModel.uploaderSubscriberText.collectAsState()
     val channelAvatarUrl by viewModel.channelAvatarUrl.collectAsState()
     val commentTeaser by viewModel.commentTeaser.collectAsState()
+    val commentCountText by viewModel.commentCountText.collectAsState()
+    val videoViewsText by viewModel.videoViewsText.collectAsState()
+    val videoUploadDateText by viewModel.videoUploadDateText.collectAsState()
+    val userAccount by viewModel.account.collectAsState()
     val relatedVideos by viewModel.relatedVideos.collectAsState()
     val isLoadingMoreRelated by viewModel.isLoadingMoreRelated.collectAsState()
     val userPlaylists by viewModel.userPlaylists.collectAsState()
@@ -1341,11 +1345,14 @@ fun WatchScreen(
 
         // 2. Info Video, Komentar, & Daftar Video Terkait (Hanya tampil saat mode Portrait)
         if (!isLandscape) {
-            // Bar & Antrean Playlist YouTube (Tonton Nanti, Disukai, dan Playlist Akun Pengguna)
-            if (currentPlaylist != null && queue.isNotEmpty()) {
+            // Bar & Antrean Playlist YouTube (Tonton Nanti, Disukai, dan Playlist Akun Pengguna / Antrean Kustom)
+            val hasQueue = (currentPlaylist != null && queue.isNotEmpty()) || queue.size > 1
+            if (hasQueue) {
+                val qName = currentPlaylist?.name ?: "Antrean"
+                val qUploader = currentPlaylist?.uploaderName?.ifBlank { "${queue.size} video" } ?: "${queue.size} video"
                 PlaylistQueueBanner(
-                    playlistName = currentPlaylist!!.name,
-                    uploaderName = currentPlaylist!!.uploaderName.orEmpty(),
+                    playlistName = qName,
+                    uploaderName = qUploader,
                     currentIndex = currentIndex,
                     totalCount = queue.size,
                     isExpanded = isPlaylistQueueExpanded,
@@ -1358,7 +1365,7 @@ fun WatchScreen(
                         currentIndex = currentIndex,
                         isShuffleEnabled = isShuffleEnabled,
                         repeatMode = repeatMode,
-                        playlistName = currentPlaylist!!.name,
+                        playlistName = qName,
                         onToggleShuffle = { viewModel.toggleShuffle() },
                         onToggleRepeat = { viewModel.toggleRepeatMode() },
                         onVideoClick = { index -> viewModel.playQueueIndex(index) },
@@ -1441,6 +1448,10 @@ fun WatchScreen(
                             subscriberText = uploaderSubscriberText ?: state.bundle.formattedSubscribers,
                             channelAvatarUrl = channelAvatarUrl,
                             commentTeaser = commentTeaser,
+                            commentCountText = commentCountText,
+                            videoViewsText = videoViewsText,
+                            videoUploadDateText = videoUploadDateText,
+                            userAccount = userAccount,
                             relatedVideos = relatedVideos,
                             isLoadingMoreRelated = isLoadingMoreRelated,
                             onLikeClick = {
@@ -1473,9 +1484,11 @@ fun WatchScreen(
                             },
                             onPlayNext = { relatedVideo ->
                                 playerController.addToQueueNext(relatedVideo)
+                                Toast.makeText(context, "Akan diputar berikutnya", Toast.LENGTH_SHORT).show()
                             },
                             onAddToQueue = { relatedVideo ->
                                 playerController.addToQueue(relatedVideo)
+                                Toast.makeText(context, "Ditambahkan ke antrean", Toast.LENGTH_SHORT).show()
                             },
                             onPlayInBackground = { relatedId ->
                                 playerController.playInBackground(relatedId)
@@ -2015,6 +2028,10 @@ private fun WatchContent(
     subscriberText: String,
     channelAvatarUrl: String? = null,
     commentTeaser: Pair<String, String?>? = null,
+    commentCountText: String? = null,
+    videoViewsText: String? = null,
+    videoUploadDateText: String? = null,
+    userAccount: id.katube.data.model.GoogleAccount? = null,
     relatedVideos: List<VideoItem>,
     isLoadingMoreRelated: Boolean,
     onLikeClick: () -> Unit,
@@ -2078,19 +2095,28 @@ private fun WatchContent(
                 }
 
                 // Metadata: Jumlah Penonton & Waktu Unggah persis seperti YouTube
-                val viewsText = if (bundle.formattedViews.isNotEmpty()) "${bundle.formattedViews} ditonton" else ""
+                val effectiveViews = videoViewsText?.ifBlank { null }
+                    ?: if (bundle.formattedViews.isNotEmpty()) "${bundle.formattedViews} ditonton" else ""
+
                 val isReallyLive = bundle.isLive && bundle.durationSeconds <= 0
-                val dateText = if (isReallyLive) {
+                val effectiveDate = if (isReallyLive) {
                     "LIVE"
                 } else {
-                    val raw = bundle.uploadDateText.orEmpty().trim()
-                    val cleanDate = if (raw.equals("LIVE", ignoreCase = true) || raw.equals("Sedang Live", ignoreCase = true) || raw.contains("LIVE", ignoreCase = true)) {
-                        ""
-                    } else raw
-                    TimeAgoUtils.format(null, cleanDate).ifEmpty { "Beberapa saat lalu" }
+                    val parsedDate = videoUploadDateText?.ifBlank { null }
+                        ?: run {
+                            val raw = bundle.uploadDateText.orEmpty().trim()
+                            val cleanDate = if (raw.equals("LIVE", ignoreCase = true) || raw.equals("Sedang Live", ignoreCase = true) || raw.contains("LIVE", ignoreCase = true)) {
+                                ""
+                            } else raw
+                            TimeAgoUtils.format(null, cleanDate).takeIf { it.isNotBlank() }
+                        }
+                    parsedDate.orEmpty()
                 }
-                val metaText = listOf(viewsText, dateText).filter { it.isNotEmpty() }.joinToString(" • ")
-                    .ifEmpty { "${bundle.durationSeconds / 60}m ${bundle.durationSeconds % 60}s" }
+
+                val metaText = listOf(effectiveViews, effectiveDate).filter { it.isNotEmpty() }.joinToString(" • ")
+                    .ifEmpty {
+                        if (bundle.durationSeconds > 0) "${bundle.durationSeconds / 60}m ${bundle.durationSeconds % 60}s" else ""
+                    }
 
                 Text(
                     text = metaText,
@@ -2422,8 +2448,10 @@ private fun WatchContent(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        val countDisplay = commentCountText?.ifBlank { null }
+                            ?: if (comments.isNotEmpty()) "${comments.size}" else ""
                         Text(
-                            text = "Komentar ${if (comments.isNotEmpty()) comments.size else ""}",
+                            text = if (countDisplay.isNotEmpty()) "Komentar $countDisplay" else "Komentar",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onBackground,
@@ -2436,60 +2464,79 @@ private fun WatchContent(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     if (comments.isNotEmpty()) {
                         val topComment = comments.first()
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.Top,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
                             if (!topComment.authorAvatarUrl.isNullOrEmpty()) {
                                 AsyncImage(
                                     model = topComment.authorAvatarUrl,
                                     contentDescription = topComment.authorName,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier
-                                        .size(24.dp)
+                                        .size(28.dp)
                                         .clip(CircleShape),
                                 )
                             } else {
                                 Box(
                                     modifier = Modifier
-                                        .size(24.dp)
+                                        .size(28.dp)
                                         .clip(CircleShape)
                                         .background(MaterialTheme.colorScheme.surfaceVariant),
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Text(
-                                        text = topComment.authorName.firstOrNull()?.uppercase() ?: "U",
+                                        text = topComment.displayAuthorName.removePrefix("@").firstOrNull()?.uppercase() ?: "U",
                                         style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
                             }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = CommentUtils.cleanCommentText(topComment.text).ifBlank { "Lihat komentar..." },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = topComment.displayAuthorName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = CommentUtils.cleanCommentText(topComment.text).ifBlank { "Lihat komentar..." },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    lineHeight = 16.sp,
+                                )
+                            }
                         }
                     } else if (commentTeaser != null) {
                         val (teaserText, teaserAvatar) = commentTeaser
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.Top,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
                             if (!teaserAvatar.isNullOrEmpty()) {
                                 AsyncImage(
                                     model = teaserAvatar,
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier
-                                        .size(24.dp)
+                                        .size(28.dp)
                                         .clip(CircleShape),
                                 )
                             } else {
                                 Box(
                                     modifier = Modifier
-                                        .size(24.dp)
+                                        .size(28.dp)
                                         .clip(CircleShape)
                                         .background(MaterialTheme.colorScheme.surfaceVariant),
                                     contentAlignment = Alignment.Center,
@@ -2498,17 +2545,19 @@ private fun WatchContent(
                                         imageVector = Icons.Default.AccountCircle,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(20.dp),
+                                        modifier = Modifier.size(22.dp),
                                     )
                                 }
                             }
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
                             Text(
                                 text = CommentUtils.cleanCommentText(teaserText).ifBlank { "Lihat komentar..." },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
+                                lineHeight = 16.sp,
+                                modifier = Modifier.weight(1f),
                             )
                         }
                     } else if (isLoadingComments) {
@@ -2637,8 +2686,10 @@ private fun WatchContent(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    val sheetCountDisplay = commentCountText?.ifBlank { null }
+                        ?: if (comments.isNotEmpty()) "${comments.size}" else ""
                     Text(
-                        text = "Komentar",
+                        text = if (sheetCountDisplay.isNotEmpty()) "Komentar $sheetCountDisplay" else "Komentar",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground,
@@ -2742,16 +2793,45 @@ private fun WatchContent(
                     }
                 }
 
-                // Bar Input Komentar Bawah: "Tulis komentar publik..."
+                // Bar Input Komentar Bawah: Avatar Pengguna + "Tulis komentar publik..." + Tombol Kirim
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 10.dp)
                         .clip(RoundedCornerShape(24.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    val avatarUrl = userAccount?.avatarUrl
+                    if (!avatarUrl.isNullOrEmpty()) {
+                        AsyncImage(
+                            model = avatarUrl,
+                            contentDescription = userAccount?.displayName ?: "Profil",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape),
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(Gold.copy(alpha = 0.2f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = userAccount?.displayName?.firstOrNull()?.uppercase() ?: "A",
+                                fontWeight = FontWeight.Bold,
+                                color = Gold,
+                                fontSize = 13.sp,
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
                     BasicTextField(
                         value = newCommentText,
                         onValueChange = { newCommentText = it },

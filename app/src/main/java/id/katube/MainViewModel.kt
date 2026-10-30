@@ -130,4 +130,28 @@ class MainViewModel @Inject constructor(
             authRepository.logout()
         }
     }
+
+    fun playMix(video: id.katube.data.model.VideoItem, onStart: (String) -> Unit) {
+        val mixPlaylistId = video.playlistId ?: if (video.id.startsWith("RD")) video.id else null
+        val targetVideoId = if (video.id.length == 11 && !video.id.startsWith("RD")) video.id else ""
+
+        if (targetVideoId.isNotBlank()) {
+            onStart(targetVideoId)
+        }
+
+        if (!mixPlaylistId.isNullOrEmpty()) {
+            viewModelScope.launch {
+                syncRepository.fetchPlaylistDetails(mixPlaylistId).onSuccess { playlist ->
+                    if (playlist.videos.isNotEmpty()) {
+                        val playId = if (targetVideoId.isBlank()) playlist.videos.first().id else targetVideoId
+                        val startIdx = playlist.videos.indexOfFirst { it.id == playId }.coerceAtLeast(0)
+                        playerController.setPlaylistQueue(playlist, startIdx)
+                        if (targetVideoId.isBlank()) {
+                            onStart(playId)
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

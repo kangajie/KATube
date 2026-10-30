@@ -73,6 +73,15 @@ class WatchViewModel @Inject constructor(
     private val _commentTeaser = MutableStateFlow<Pair<String, String?>?>(null)
     val commentTeaser: StateFlow<Pair<String, String?>?> = _commentTeaser.asStateFlow()
 
+    private val _commentCountText = MutableStateFlow<String?>(null)
+    val commentCountText: StateFlow<String?> = _commentCountText.asStateFlow()
+
+    private val _videoViewsText = MutableStateFlow<String?>(null)
+    val videoViewsText: StateFlow<String?> = _videoViewsText.asStateFlow()
+
+    private val _videoUploadDateText = MutableStateFlow<String?>(null)
+    val videoUploadDateText: StateFlow<String?> = _videoUploadDateText.asStateFlow()
+
     private val _relatedVideos = MutableStateFlow<List<VideoItem>>(emptyList())
     val relatedVideos: StateFlow<List<VideoItem>> = _relatedVideos.asStateFlow()
 
@@ -80,6 +89,9 @@ class WatchViewModel @Inject constructor(
     val isLoadingMoreRelated: StateFlow<Boolean> = _isLoadingMoreRelated.asStateFlow()
 
     val userPlaylists: StateFlow<List<PlaylistItem>> = syncRepository.userPlaylists
+
+    val account: StateFlow<id.katube.data.model.GoogleAccount> = authRepository.account
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), id.katube.data.model.GoogleAccount())
 
     private var nextRelatedContinuation: String? = null
     private fun checkSubscribedLocally(uploaderUrl: String?, uploaderName: String?): Boolean {
@@ -190,7 +202,31 @@ class WatchViewModel @Inject constructor(
                     watchNextJob?.cancel()
                     watchNextJob = launch {
                         syncRepository.fetchWatchNextRelated(activeBundle.videoId).onSuccess { data ->
-                            if (!data.subscriberText.isNullOrBlank()) {
+                            if (!data.viewCountText.isNullOrBlank()) {
+                                _videoViewsText.value = data.viewCountText
+                            }
+                            if (!data.uploadDateText.isNullOrBlank()) {
+                                _videoUploadDateText.value = data.uploadDateText
+                            }
+                            if (!data.commentCountText.isNullOrBlank()) {
+                                _commentCountText.value = data.commentCountText
+                            }
+                            if (!data.commentTeaserText.isNullOrBlank()) {
+                                _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
+                            }
+                            if (!data.viewCountText.isNullOrBlank()) {
+                        _videoViewsText.value = data.viewCountText
+                    }
+                    if (!data.uploadDateText.isNullOrBlank()) {
+                        _videoUploadDateText.value = data.uploadDateText
+                    }
+                    if (!data.commentCountText.isNullOrBlank()) {
+                        _commentCountText.value = data.commentCountText
+                    }
+                    if (!data.commentTeaserText.isNullOrBlank()) {
+                        _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
+                    }
+                    if (!data.subscriberText.isNullOrBlank()) {
                                 _uploaderSubscriberText.value = data.subscriberText
                             }
                             if (!data.channelId.isNullOrEmpty()) {
@@ -307,6 +343,18 @@ class WatchViewModel @Inject constructor(
             watchNextJob?.cancel()
             watchNextJob = viewModelScope.launch {
                 syncRepository.fetchWatchNextRelated(id).onSuccess { data ->
+                    if (!data.viewCountText.isNullOrBlank()) {
+                        _videoViewsText.value = data.viewCountText
+                    }
+                    if (!data.uploadDateText.isNullOrBlank()) {
+                        _videoUploadDateText.value = data.uploadDateText
+                    }
+                    if (!data.commentCountText.isNullOrBlank()) {
+                        _commentCountText.value = data.commentCountText
+                    }
+                    if (!data.commentTeaserText.isNullOrBlank()) {
+                        _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
+                    }
                     if (!data.subscriberText.isNullOrBlank()) {
                         _uploaderSubscriberText.value = data.subscriberText
                     }
@@ -361,6 +409,9 @@ class WatchViewModel @Inject constructor(
         _uploaderSubscriberText.value = null
         _channelAvatarUrl.value = previewItem?.uploaderAvatarUrl
         _commentTeaser.value = null
+        _commentCountText.value = null
+        _videoViewsText.value = previewItem?.formattedViews?.takeIf { it.isNotEmpty() }?.let { "$it ditonton" }
+        _videoUploadDateText.value = previewItem?.uploadDateText
         if (previewItem == null) {
             _relatedVideos.value = emptyList()
         }

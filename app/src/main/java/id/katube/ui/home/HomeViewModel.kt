@@ -121,60 +121,30 @@ class HomeViewModel @Inject constructor(
         val isUserLoggedIn = account.isLoggedIn && account.cookies.isNotBlank()
 
         if (isUserLoggedIn && category == "Semua") {
-            if (!isRefresh) {
-                // Tampilkan cache feed personal dari sinkronisasi terlebih dahulu jika tersedia
+            if (!isRefresh && allVideos.isNotEmpty()) {
+                _uiState.value = HomeUiState.Success(allVideos.toList())
+                return
+            }
+
+            // Murni ambil feed rekomendasi beranda personal langsung dari akun YouTube pengguna (FEwhat_to_watch)
+            val syncResult = syncRepository.fetchHomeFeed(account.cookies, continuationToken = null)
+            if (syncResult.isSuccess) {
+                val pair = syncResult.getOrNull()
+                val feedVideos = pair?.first.orEmpty().filter { it.id.isNotEmpty() }
+                homeContinuationToken = pair?.second
+
+                if (feedVideos.isNotEmpty()) {
+                    allVideos.clear()
+                    allVideos.addAll(feedVideos)
+                    _uiState.value = HomeUiState.Success(allVideos.toList())
+                    return
+                }
+            } else {
+                // Fallback jika koneksi gagal: tampilkan cache beranda lokal akun jika ada
                 val cached = syncRepository.homeFeed.value
                 if (cached.isNotEmpty()) {
                     allVideos.clear()
                     allVideos.addAll(cached)
-                    _uiState.value = HomeUiState.Success(allVideos.toList())
-                    return
-                }
-
-                // Ambil feed beranda awal
-                val syncResult = syncRepository.fetchHomeFeed(account.cookies)
-                if (syncResult.isSuccess) {
-                    val pair = syncResult.getOrNull()
-                    val feedVideos = pair?.first.orEmpty()
-                    homeContinuationToken = pair?.second
-
-                    if (feedVideos.isNotEmpty()) {
-                        allVideos.clear()
-                        allVideos.addAll(feedVideos)
-                        _uiState.value = HomeUiState.Success(allVideos.toList())
-                        return
-                    }
-                }
-            } else {
-                // Saat Pengguna Me-refresh (Pull to Refresh):
-                // 1. Coba ambil halaman/batch kelanjutan berikutnya (continuation token) dari YouTube agar video 100% berbeda
-                var refreshedVideos: List<VideoItem> = emptyList()
-                if (homeContinuationToken != null) {
-                    val contRes = syncRepository.fetchHomeFeed(account.cookies, homeContinuationToken)
-                    if (contRes.isSuccess) {
-                        val pair = contRes.getOrNull()
-                        homeContinuationToken = pair?.second
-                        refreshedVideos = pair?.first.orEmpty().filter { it.id.isNotEmpty() }
-                    }
-                }
-
-                // 2. Jika tidak ada continuation atau token sudah habis, ambil kombinasi segar video langganan + topik segar beranda
-                if (refreshedVideos.isEmpty()) {
-                    refreshRotationIndex++
-                    val topic = getNextFeedTopic("Semua", refreshRotationIndex)
-                    val searchDeferred = repository.search(topic)
-                    val freshFromTopic = searchDeferred.getOrNull().orEmpty().filter { it.id.isNotEmpty() }
-                    val subsVideos = syncRepository.subscriptionFeed.value.filter { it.id.isNotEmpty() }
-                    refreshedVideos = (subsVideos.shuffled().take(6) + freshFromTopic).distinctBy { it.id }
-
-                    // Reset token kelanjutan untuk paginasi berikutnya
-                    val freshHome = syncRepository.fetchHomeFeed(account.cookies)
-                    homeContinuationToken = freshHome.getOrNull()?.second
-                }
-
-                if (refreshedVideos.isNotEmpty()) {
-                    allVideos.clear()
-                    allVideos.addAll(refreshedVideos)
                     _uiState.value = HomeUiState.Success(allVideos.toList())
                     return
                 }

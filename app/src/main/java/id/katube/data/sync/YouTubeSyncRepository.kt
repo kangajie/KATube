@@ -1142,6 +1142,40 @@ class YouTubeSyncRepository @Inject constructor(
                 .removePrefix("VL")
                 .trim()
 
+            // 0. Penanganan Khusus YouTube Mix / Radio (RD..., RDMM...):
+            // YouTube Mix bukan playlist browseable statis melainkan stream radio dinamis yang dilayani lewat endpoint 'next'.
+            if (cleanId.startsWith("RD")) {
+                val account = authRepository.account.first()
+                val cookies = if (account.isLoggedIn) account.cookies else ""
+                val payload = createInnertubeContext().apply {
+                    put("playlistId", cleanId)
+                }
+                val responseJson = postInnertube("next", payload, cookies)
+                val panelList = mutableListOf<JSONObject>()
+                findObjectsWithKey(responseJson, "playlistPanelRenderer", panelList)
+                val panel = panelList.firstOrNull()
+
+                val mixTitle = panel?.optString("title")
+                    ?: getTextFromRunsOrSimple(panel?.optJSONObject("title"))
+                        .ifBlank { "YouTube Mix" }
+
+                val mixVideos = mutableListOf<VideoItem>()
+                extractFeedItems(panel ?: responseJson, mixVideos)
+                val distinctVideos = mixVideos.distinctBy { it.id }.filter { isValidVideoId(it.id) }
+
+                return@withContext Result.success(
+                    PlaylistItem(
+                        id = cleanId,
+                        url = "https://www.youtube.com/playlist?list=$cleanId",
+                        name = mixTitle,
+                        uploaderName = "YouTube Mix",
+                        thumbnailUrl = distinctVideos.firstOrNull()?.thumbnailUrl,
+                        streamCount = distinctVideos.size.toLong(),
+                        videos = distinctVideos
+                    )
+                )
+            }
+
             val browseId = when {
                 cleanId.equals("WL", ignoreCase = true) -> "VLWL"
                 cleanId.equals("LL", ignoreCase = true) -> "VLLL"
@@ -1539,13 +1573,17 @@ class YouTubeSyncRepository @Inject constructor(
         }
     }
 
-    suspend fun postComment(videoId: String, text: String): Result<Boolean> = withContext(ioDispatcher) {
+    suspend fun postComment(videoId: String, text: String, playlistId: String? = null): Result<Boolean> = withContext(ioDispatcher) {
         try {
             val account = authRepository.account.first()
             if (account.isLoggedIn && account.cookies.isNotBlank()) {
                 // 1. Ambil createCommentParams dari endpoint next Innertube
                 val nextPayload = createInnertubeContext().apply {
                     put("videoId", videoId)
+                    if (!playlistId.isNullOrEmpty()) {
+                        put("playlistId", playlistId)
+                    }
+
                 }
                 var commentParams: String? = null
                 try {
@@ -1633,13 +1671,16 @@ class YouTubeSyncRepository @Inject constructor(
         val commentTeaserAuthor: String? = null,
         val commentTeaserAvatar: String? = null,
         val commentCountText: String? = null,
+        val viewCountText: String? = null,
+        val uploadDateText: String? = null,
+        val viewCountNumber: Long? = null,
     )
 
     /**
      * Mengambil daftar video terkait berikutnya (Watch Next Related Videos) dengan paginasi tak terbatas,
      * serta metadata interaktif (subscriber channel, status like/dislike akun, status subscribe).
      */
-    suspend fun fetchWatchNextRelated(videoId: String, continuationToken: String? = null): Result<WatchNextData> = withContext(ioDispatcher) {
+    suspend fun fetchWatchNextRelated(videoId: String, continuationToken: String? = null, playlistId: String? = null): Result<WatchNextData> = withContext(ioDispatcher) {
         try {
             val account = authRepository.account.first()
             val cookies = if (account.isLoggedIn) account.cookies else ""
@@ -1648,6 +1689,10 @@ class YouTubeSyncRepository @Inject constructor(
                     put("continuation", continuationToken)
                 } else {
                     put("videoId", videoId)
+                    if (!playlistId.isNullOrEmpty()) {
+                        put("playlistId", playlistId)
+                    }
+
                 }
             }
             val responseJson = postInnertube("next", payload, cookies)
@@ -1665,6 +1710,9 @@ class YouTubeSyncRepository @Inject constructor(
             var commentTeaserAuthor: String? = null
             var commentTeaserAvatar: String? = null
             var commentCountText: String? = null
+            var viewCountText: String? = null
+            var uploadDateText: String? = null
+            var viewCountNumber: Long? = null
 
             // 1. Cek status like dari cache in-memory lokal
             if (userLikedVideoIds.contains(videoId)) {
@@ -1675,6 +1723,43 @@ class YouTubeSyncRepository @Inject constructor(
 
             if (continuationToken == null) {
                 try {
+                    // Ekstraksi info utama video (Jumlah tayang & Waktu unggah sebenarnya dari YouTube)
+                    val primaryList = mutableListOf<JSONObject>()
+                    findObjectsWithKey(responseJson, "videoPrimaryInfoRenderer", primaryList)
+                    val primary = primaryList.firstOrNull()
+                    if (primary != null) {
+                        val viewRenderer = primary.optJSONObject("viewCount")?.optJSONObject("videoViewCountRenderer")
+                        val shortViews = getTextFromRunsOrSimple(viewRenderer?.optJSONObject("shortViewCount"))
+                        val fullViews = getTextFromRunsOrSimple(viewRenderer?.optJSONObject("viewCount"))
+                        val bestViews = shortViews.ifBlank { fullViews }.trim()
+                        if (bestViews.isNotBlank()) {
+                            viewCountText = bestViews
+                            viewCountNumber = parseViewCountText(bestViews)
+                        }
+
+                        val relDate = getTextFromRunsOrSimple(primary.optJSONObject("relativeDateText")).trim()
+                        val absDate = getTextFromRunsOrSimple(primary.optJSONObject("dateText")).trim()
+                        val bestDate = relDate.ifBlank { absDate }
+                        if (bestDate.isNotBlank()) {
+                            uploadDateText = bestDate
+                        }
+                    }
+
+                    if (viewCountText == null) {
+                        val viewRenderers = mutableListOf<JSONObject>()
+                        findObjectsWithKey(responseJson, "videoViewCountRenderer", viewRenderers)
+                        val vr = viewRenderers.firstOrNull()
+                        if (vr != null) {
+                            val shortViews = getTextFromRunsOrSimple(vr.optJSONObject("shortViewCount"))
+                            val fullViews = getTextFromRunsOrSimple(vr.optJSONObject("viewCount"))
+                            val bestViews = shortViews.ifBlank { fullViews }.trim()
+                            if (bestViews.isNotBlank()) {
+                                viewCountText = bestViews
+                                viewCountNumber = parseViewCountText(bestViews)
+                            }
+                        }
+                    }
+
                     val secList = mutableListOf<JSONObject>()
                     findObjectsWithKey(responseJson, "videoSecondaryInfoRenderer", secList)
                     val sec = secList.firstOrNull()
@@ -1824,6 +1909,9 @@ class YouTubeSyncRepository @Inject constructor(
                     commentTeaserAuthor = commentTeaserAuthor,
                     commentTeaserAvatar = commentTeaserAvatar,
                     commentCountText = commentCountText,
+                    viewCountText = viewCountText,
+                    uploadDateText = uploadDateText,
+                    viewCountNumber = viewCountNumber,
                 )
             )
         } catch (e: Exception) {
@@ -2082,6 +2170,8 @@ class YouTubeSyncRepository @Inject constructor(
                     parseVideoRenderer(json.optJSONObject("gridVideoRenderer") ?: JSONObject())?.let { outList.add(it) }
                 } else if (json.has("historyVideoRenderer")) {
                     parseVideoRenderer(json.optJSONObject("historyVideoRenderer") ?: JSONObject())?.let { outList.add(it) }
+                } else if (json.has("playlistPanelVideoRenderer")) {
+                    parsePlaylistPanelVideoRenderer(json.optJSONObject("playlistPanelVideoRenderer") ?: JSONObject())?.let { outList.add(it) }
                 } else if (json.has("playlistVideoRenderer")) {
                     parsePlaylistVideoRenderer(json.optJSONObject("playlistVideoRenderer") ?: JSONObject())?.let { outList.add(it) }
                 } else if (json.has("radioRenderer")) {
@@ -2463,7 +2553,7 @@ class YouTubeSyncRepository @Inject constructor(
                 ?.removePrefix("Buka channel ")?.removePrefix("Open channel ").orEmpty()
         }
 
-        val viewCount = viewsText.filter { it.isDigit() }.toLongOrNull() ?: 0L
+        val viewCount = parseViewCountText(viewsText)
         val finalId = realVideoId.ifEmpty { contentId }
 
         val durationSec = if (isLive) 0L else parseDurationStringToSeconds(durationText)
@@ -2484,7 +2574,7 @@ class YouTubeSyncRepository @Inject constructor(
             isLive = isLive,
             rawDurationText = if (isLive) "LIVE" else durationText.ifBlank { null },
             viewCount = viewCount,
-            uploadDateText = if (uploadDate.isNotBlank()) "$viewsText • $uploadDate" else viewsText.ifEmpty { if (isMixOrPlaylist) "Mix" else null },
+            uploadDateText = uploadDate.ifBlank { if (isMixOrPlaylist) "Mix" else null },
             isMix = isMixOrPlaylist,
             playlistId = playlistId,
             playbackPercent = if (percentWatched > 0) percentWatched / 100f else 0f,
@@ -2582,7 +2672,7 @@ class YouTubeSyncRepository @Inject constructor(
             .ifEmpty { getTextFromRunsOrSimple(renderer.optJSONObject("shortBylineText")) }
         val thumbnail = getHighestResThumbnail(renderer.optJSONObject("thumbnail"))
         val viewsText = getTextFromRunsOrSimple(renderer.optJSONObject("viewCountText"))
-        val viewCount = viewsText.filter { it.isDigit() }.toLongOrNull() ?: 0L
+        val viewCount = parseViewCountText(viewsText)
         val uploadDate = getTextFromRunsOrSimple(renderer.optJSONObject("publishedTimeText"))
 
         // Ekstrak status LIVE, durasi, dan persentase tontonan (resume playback) dari YouTube
@@ -2712,6 +2802,29 @@ class YouTubeSyncRepository @Inject constructor(
         )
     }
 
+    private fun parsePlaylistPanelVideoRenderer(renderer: JSONObject): VideoItem? {
+        val videoId = renderer.optString("videoId")
+        if (!isValidVideoId(videoId)) return null
+
+        val title = getTextFromRunsOrSimple(renderer.optJSONObject("title"))
+        val uploader = getTextFromRunsOrSimple(renderer.optJSONObject("shortBylineText"))
+            .ifEmpty { getTextFromRunsOrSimple(renderer.optJSONObject("longBylineText")) }
+        val thumbnail = getHighestResThumbnail(renderer.optJSONObject("thumbnail"))
+            .ifEmpty { "https://i.ytimg.com/vi/$videoId/hqdefault.jpg" }
+        val lengthText = getTextFromRunsOrSimple(renderer.optJSONObject("lengthText"))
+        val durationSec = parseDurationStringToSeconds(lengthText)
+
+        return VideoItem(
+            id = videoId,
+            url = "https://www.youtube.com/watch?v=$videoId",
+            title = title.ifEmpty { "Video YouTube" },
+            uploaderName = uploader.ifEmpty { "YouTube" },
+            thumbnailUrl = thumbnail,
+            durationSeconds = durationSec,
+            rawDurationText = lengthText.ifBlank { null }
+        )
+    }
+
     private fun parseDurationStringToSeconds(text: String): Long {
         if (text.isBlank() || text.equals("LIVE", ignoreCase = true) || text.equals("LANGSUNG", ignoreCase = true)) return 0L
         val clean = text.trim()
@@ -2744,6 +2857,39 @@ class YouTubeSyncRepository @Inject constructor(
         }
 
         return 0L
+    }
+
+    fun parseViewCountText(text: String): Long {
+        val clean = text.trim().lowercase()
+        if (clean.isEmpty()) return 0L
+        try {
+            val numPart = clean
+                .replace("x ditonton", "")
+                .replace("ditonton", "")
+                .replace("views", "")
+                .replace("view", "")
+                .trim()
+
+            if (numPart.contains("miliar") || numPart.endsWith("b")) {
+                val numStr = numPart.replace("miliar", "").replace("b", "").trim().replace(',', '.')
+                val mult = numStr.toDoubleOrNull() ?: return 0L
+                return (mult * 1_000_000_000).toLong()
+            }
+            if (numPart.contains("jt") || numPart.endsWith("m")) {
+                val numStr = numPart.replace("jt", "").replace("m", "").trim().replace(',', '.')
+                val mult = numStr.toDoubleOrNull() ?: return 0L
+                return (mult * 1_000_000).toLong()
+            }
+            if (numPart.contains("rb") || numPart.endsWith("k")) {
+                val numStr = numPart.replace("rb", "").replace("k", "").trim().replace(',', '.')
+                val mult = numStr.toDoubleOrNull() ?: return 0L
+                return (mult * 1_000).toLong()
+            }
+            val digitsOnly = numPart.filter { it.isDigit() }
+            return digitsOnly.toLongOrNull() ?: 0L
+        } catch (_: Exception) {
+            return 0L
+        }
     }
 
     private fun getTextFromRunsOrSimple(obj: JSONObject?): String {

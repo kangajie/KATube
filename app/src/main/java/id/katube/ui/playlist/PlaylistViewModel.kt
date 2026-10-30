@@ -54,7 +54,7 @@ class PlaylistViewModel @Inject constructor(
             val isUserPlaylist = syncRepository.userPlaylists.value.any {
                 it.id.removePrefix("VL").equals(cleanId, ignoreCase = true)
             }
-            if (isUserPlaylist || cleanId.equals("WL", ignoreCase = true) || cleanId.equals("LL", ignoreCase = true)) {
+            if (isUserPlaylist || cleanId.equals("WL", ignoreCase = true) || cleanId.equals("LL", ignoreCase = true) || cleanId.startsWith("RD")) {
                 syncRepository.fetchPlaylistDetails(cleanId).fold(
                     onSuccess = { playlist ->
                         _uiState.value = PlaylistUiState.Success(playlist)

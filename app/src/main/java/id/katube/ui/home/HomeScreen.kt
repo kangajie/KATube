@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.util.UnstableApi
@@ -54,6 +55,7 @@ fun HomeScreen(
     val uiState by viewModel.uiState.collectAsState()
     val selectedCategory by viewModel.selectedCategory.collectAsState()
     val isLoadingMore by viewModel.isLoadingMore.collectAsState()
+    val context = LocalContext.current
 
     val configuration = LocalConfiguration.current
     val screenWidthDp = configuration.screenWidthDp
@@ -162,7 +164,13 @@ fun HomeScreen(
                                 video = video,
                                 onClick = {
                                     mainViewModel.playerController.pendingPreviewItem = video
-                                    onVideoClick(video.id)
+                                    if (video.isMix && (!video.playlistId.isNullOrEmpty() || video.id.startsWith("RD"))) {
+                                        mainViewModel.playMix(video) { targetId ->
+                                            onVideoClick(targetId)
+                                        }
+                                    } else {
+                                        onVideoClick(video.id)
+                                    }
                                 },
                                 onPlayInBackground = {
                                     mainViewModel.playerController.playInBackground(video.id)
@@ -173,9 +181,11 @@ fun HomeScreen(
                                 },
                                 onPlayNext = {
                                     mainViewModel.playerController.addToQueueNext(video)
+                                    android.widget.Toast.makeText(context, "Akan diputar berikutnya", android.widget.Toast.LENGTH_SHORT).show()
                                 },
                                 onAddToQueue = {
                                     mainViewModel.playerController.addToQueue(video)
+                                    android.widget.Toast.makeText(context, "Ditambahkan ke antrean", android.widget.Toast.LENGTH_SHORT).show()
                                 },
                                 onNotInterested = {
                                     viewModel.removeVideo(video.id)

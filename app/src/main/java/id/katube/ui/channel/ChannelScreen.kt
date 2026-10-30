@@ -307,9 +307,11 @@ private fun ChannelContent(
                     },
                     onPlayNext = {
                         mainViewModel.playerController.addToQueueNext(video)
+                        android.widget.Toast.makeText(context, "Akan diputar berikutnya", android.widget.Toast.LENGTH_SHORT).show()
                     },
                     onAddToQueue = {
                         mainViewModel.playerController.addToQueue(video)
+                        android.widget.Toast.makeText(context, "Ditambahkan ke antrean", android.widget.Toast.LENGTH_SHORT).show()
                     },
                     onPlayInBackground = {
                         mainViewModel.playerController.playInBackground(video.id)

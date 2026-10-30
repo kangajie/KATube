@@ -457,15 +457,65 @@ class PlayerController @Inject constructor(
     
     fun addToQueue(video: id.katube.data.model.VideoItem) {
         val currentList = _queue.value.toMutableList()
+        val currentBundle = _currentStreamBundle.value
+
+        // Jika antrean kosong namun ada video yang sedang aktif diputar, masukkan video aktif sebagai item pertama antrean
+        if (currentList.isEmpty() && currentBundle != null && currentBundle.videoId.isNotBlank()) {
+            val currentItem = pendingPreviewItem?.takeIf { it.id == currentBundle.videoId }
+                ?: id.katube.data.model.VideoItem(
+                    id = currentBundle.videoId,
+                    url = "https://www.youtube.com/watch?v=${currentBundle.videoId}",
+                    title = currentBundle.title,
+                    uploaderName = currentBundle.uploaderName,
+                    uploaderAvatarUrl = currentBundle.uploaderAvatarUrl,
+                    thumbnailUrl = currentBundle.thumbnailUrl,
+                    durationSeconds = currentBundle.durationSeconds,
+                    viewCount = currentBundle.viewCount,
+                    uploadDateText = currentBundle.uploadDateText,
+                    isLive = currentBundle.isLive
+                )
+            currentList.add(currentItem)
+            _currentIndex.value = 0
+        }
+
         currentList.add(video)
         _queue.value = currentList
+
+        // Jika player belum memutar apapun, mulai video ini seketika
+        if (currentBundle == null || (currentBundle.selectedVideoUrl.isNullOrEmpty() && mediaController?.currentMediaItem == null)) {
+            prepareForNewVideo(video.id, previewItem = video)
+        }
     }
 
     fun addToQueueNext(video: id.katube.data.model.VideoItem) {
         val currentList = _queue.value.toMutableList()
+        val currentBundle = _currentStreamBundle.value
+
+        if (currentList.isEmpty() && currentBundle != null && currentBundle.videoId.isNotBlank()) {
+            val currentItem = pendingPreviewItem?.takeIf { it.id == currentBundle.videoId }
+                ?: id.katube.data.model.VideoItem(
+                    id = currentBundle.videoId,
+                    url = "https://www.youtube.com/watch?v=${currentBundle.videoId}",
+                    title = currentBundle.title,
+                    uploaderName = currentBundle.uploaderName,
+                    uploaderAvatarUrl = currentBundle.uploaderAvatarUrl,
+                    thumbnailUrl = currentBundle.thumbnailUrl,
+                    durationSeconds = currentBundle.durationSeconds,
+                    viewCount = currentBundle.viewCount,
+                    uploadDateText = currentBundle.uploadDateText,
+                    isLive = currentBundle.isLive
+                )
+            currentList.add(currentItem)
+            _currentIndex.value = 0
+        }
+
         val insertIndex = (_currentIndex.value + 1).coerceAtMost(currentList.size)
         currentList.add(insertIndex, video)
         _queue.value = currentList
+
+        if (currentBundle == null || (currentBundle.selectedVideoUrl.isNullOrEmpty() && mediaController?.currentMediaItem == null)) {
+            prepareForNewVideo(video.id, previewItem = video)
+        }
     }
 
     fun playInBackground(videoId: String) {
@@ -995,6 +1045,9 @@ class PlayerController @Inject constructor(
                 uploaderAvatarUrl = preview?.uploaderAvatarUrl,
                 thumbnailUrl = preview?.thumbnailUrl,
                 durationSeconds = preview?.durationSeconds ?: 0L,
+                viewCount = preview?.viewCount ?: 0L,
+                uploadDateText = preview?.uploadDateText,
+                isLive = preview?.isLive ?: false,
                 selectedVideoUrl = null,
                 selectedAudioUrl = "",
                 selectedHeight = 0,
