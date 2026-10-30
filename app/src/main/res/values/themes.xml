@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tema splash screen dan app default (latar hitam).
+         Compose handle tema utama secara programatik lewat KATubeTheme. -->
+    <style name="Theme.KATube" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/background_dark</item>
+        <item name="android:statusBarColor">@color/background_dark</item>
+        <item name="android:navigationBarColor">@color/background_dark</item>
+    </style>
+</resources>

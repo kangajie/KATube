@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App Name -->
+    <string name="app_name">KATube</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_subscriptions">Subscriptions</string>
+    <string name="nav_library">Library</string>
+    <string name="nav_you">You</string>
+
+    <!-- General Actions -->
+    <string name="action_search">Search</string>
+    <string name="action_settings">Settings</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_subscribe">Subscribe</string>
+    <string name="action_subscribed">Subscribed</string>
+    <string name="action_share">Share</string>
+    <string name="action_audio_only">Audio only</string>
+    <string name="action_close">Close</string>
+
+    <!-- States -->
+    <string name="state_loading">Loading…</string>
+    <string name="state_error">Something went wrong. Please try again.</string>
+    <string name="state_offline">No internet connection</string>
+    <string name="state_empty_subscriptions">No subscriptions yet</string>
+
+    <!-- Search -->
+    <string name="search_hint">Search KATube</string>
+
+    <!-- Player -->
+    <string name="player_quality">Quality</string>
+    <string name="player_speed">Speed</string>
+
+    <!-- Settings -->
+    <string name="settings_theme">Theme</string>
+    <string name="settings_theme_system">System default</string>
+    <string name="settings_theme_dark">Dark (OLED)</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_playback">Playback &amp; Quality</string>
+    <string name="settings_quality_default">Default Video Resolution</string>
+    <string name="settings_speed_default">Default Playback Speed</string>
+    <string name="settings_audio_only_default">Always start in Audio-Only mode</string>
+    <string name="settings_content_country">Content Country</string>
+    <string name="settings_storage">Storage &amp; Privacy</string>
+    <string name="settings_stateless_title">Total Privacy Mode (Stateless)</string>
+    <string name="settings_stateless_desc">No watch history or account data is stored on this device.</string>
+    <string name="settings_clear_cache">Clear Temporary Cache</string>
+    <string name="settings_cache_cleared">Cache successfully cleared</string>
+    <!-- Developer & License -->
+    <string name="app_developer">KangAjieDev</string>
+    <string name="settings_developed_by">Developed by KangAjieDev</string>
+    <string name="settings_about">About</string>
+    <string name="settings_about_desc">KATube</string>
+    <string name="settings_about_license">KangAjieDev</string>
+    
+    <!-- GoTube / Additional Player Features -->
+    <string name="action_pip">Floating Pop-up (PiP)</string>
+    <string name="action_sleep_timer">Sleep Timer</string>
+    <string name="action_screen_lock">Screen Lock</string>
+    <string name="action_screen_unlocked">Screen Unlocked</string>
+    <string name="sleep_timer_off">Turn Off Timer</string>
+    <string name="sleep_timer_mins">%1$d Minutes</string>
+    <string name="sleep_timer_active">Sleep in %1$d min</string>
+
+    <!-- Playback Notification -->
+    <string name="notification_channel_playback">KATube Playback</string>
+    <string name="notification_channel_playback_desc">Background music and video playback controls</string>
+
+    <!-- Smart Recommendation Notification -->
+    <string name="notification_channel_recommendations">Video Recommendations</string>
+    <string name="notification_channel_recommendations_desc">Interesting video recommendations based on your favorite genres</string>
+    <string name="settings_daily_recommendation">Automatic daily video recommendations</string>
+    <string name="settings_daily_recommendation_desc">Send recommended video notifications matching your favorite genres every day (afternoon &amp; evening)</string>
+</resources>
