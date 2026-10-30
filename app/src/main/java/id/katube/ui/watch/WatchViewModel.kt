@@ -165,132 +165,122 @@ class WatchViewModel @Inject constructor(
         viewModelScope.launch {
             playerController.currentStreamBundle.collect { activeBundle ->
                 if (activeBundle != null && activeBundle.videoId != currentVideoId && activeBundle.videoId.isNotEmpty()) {
-                    currentVideoId = activeBundle.videoId
-                    val hasPlayableMedia = !activeBundle.selectedVideoUrl.isNullOrEmpty() ||
-                        activeBundle.selectedAudioUrl.isNotEmpty() ||
-                        !activeBundle.hlsUrl.isNullOrEmpty()
-                    if (hasPlayableMedia) {
-                        _uiState.value = WatchUiState.Success(activeBundle)
-                    } else {
-                        _uiState.value = WatchUiState.Loading(
-                            id.katube.data.model.VideoItem(
-                                id = activeBundle.videoId,
-                                url = "https://www.youtube.com/watch?v=${activeBundle.videoId}",
-                                title = activeBundle.title,
-                                uploaderName = activeBundle.uploaderName,
-                                uploaderAvatarUrl = activeBundle.uploaderAvatarUrl,
-                                thumbnailUrl = activeBundle.thumbnailUrl,
-                                durationSeconds = activeBundle.durationSeconds,
-                            )
-                        )
-                    }
-                    _relatedVideos.value = activeBundle.relatedVideos
-                    _uploaderSubscriberText.value = activeBundle.uploaderSubscriberText
-                    currentUploaderUrl = activeBundle.uploaderUrl.orEmpty()
-                    currentUploaderName = activeBundle.uploaderName
-                    sessionPlayedVideoIds.add(activeBundle.videoId)
-
-                    // Pulihkan status suka, tidak suka, dan subscribe untuk video baru ini
-                    _isLiked.value = syncRepository.isLikedLocally(activeBundle.videoId)
-                    _isDisliked.value = syncRepository.isDislikedLocally(activeBundle.videoId)
-                    _isSubscribed.value = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName)
-
-                    // Reset & muat komentar serta metadata video baru ini seketika
-                    _comments.value = emptyList()
-                    loadComments()
-
-                    watchNextJob?.cancel()
-                    watchNextJob = launch {
-                        syncRepository.fetchWatchNextRelated(activeBundle.videoId).onSuccess { data ->
-                            if (!data.viewCountText.isNullOrBlank()) {
-                                _videoViewsText.value = data.viewCountText
-                            }
-                            if (!data.uploadDateText.isNullOrBlank()) {
-                                _videoUploadDateText.value = data.uploadDateText
-                            }
-                            if (!data.commentCountText.isNullOrBlank()) {
-                                _commentCountText.value = data.commentCountText
-                            }
-                            if (!data.commentTeaserText.isNullOrBlank()) {
-                                _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
-                            }
-                            if (!data.viewCountText.isNullOrBlank()) {
-                        _videoViewsText.value = data.viewCountText
-                    }
-                    if (!data.uploadDateText.isNullOrBlank()) {
-                        _videoUploadDateText.value = data.uploadDateText
-                    }
-                    if (!data.commentCountText.isNullOrBlank()) {
-                        _commentCountText.value = data.commentCountText
-                    }
-                    if (!data.commentTeaserText.isNullOrBlank()) {
-                        _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
-                    }
-                    if (!data.subscriberText.isNullOrBlank()) {
-                                _uploaderSubscriberText.value = data.subscriberText
-                            }
-                            if (!data.channelId.isNullOrEmpty()) {
-                                currentChannelId = data.channelId
-                            }
-                            val localSub = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName) ||
-                                (!data.channelId.isNullOrEmpty() && syncRepository.isSubscribedLocally(data.channelId))
-                            _isSubscribed.value = (data.isSubscribed == true) || localSub
-
-                            val isLocalLiked = syncRepository.isLikedLocally(activeBundle.videoId)
-                            val isLocalDisliked = syncRepository.isDislikedLocally(activeBundle.videoId)
-                            if (isLocalLiked || data.likeStatus == "LIKE") {
-                                _isLiked.value = true
-                                _isDisliked.value = false
-                            } else if (isLocalDisliked || data.likeStatus == "DISLIKE") {
-                                _isLiked.value = false
-                                _isDisliked.value = true
-                            }
-                            if (data.relatedVideos.isNotEmpty()) {
-                                _relatedVideos.value = (activeBundle.relatedVideos + data.relatedVideos).distinctBy { it.id }
-                                playerController.updateRelatedVideos(data.relatedVideos)
-                            }
-                            nextRelatedContinuation = data.nextContinuation
-                        }
-                    }
-
-                    syncRepository.recordLocalWatchHistory(id.katube.data.model.VideoItem(
-                        id = activeBundle.videoId,
-                        url = "https://www.youtube.com/watch?v=${activeBundle.videoId}",
-                        title = activeBundle.title,
-                        uploaderName = activeBundle.uploaderName,
-                        uploaderAvatarUrl = activeBundle.uploaderAvatarUrl,
-                        uploaderUrl = activeBundle.uploaderUrl,
-                        durationSeconds = activeBundle.durationSeconds,
-                        viewCount = activeBundle.viewCount,
-                        uploadDateText = activeBundle.uploadDateText,
-                        thumbnailUrl = activeBundle.thumbnailUrl,
-                    ))
+                    syncWithActivePlayer(activeBundle)
                 }
             }
         }
 
         val activeBundle = playerController.currentStreamBundle.value
-        if (activeBundle != null && activeBundle.videoId == currentVideoId && (playerController.player != null || !activeBundle.selectedVideoUrl.isNullOrEmpty())) {
-            // Video ini sedang aktif diputar! Tampilkan UI langsung dan pulihkan status Like, Dislike, Subscribe & Avatar
-            _uiState.value = WatchUiState.Success(activeBundle)
-            currentUploaderName = activeBundle.uploaderName
-            currentUploaderUrl = activeBundle.uploaderUrl.orEmpty()
-            currentChannelId = activeBundle.uploaderUrl?.substringAfterLast("/").orEmpty()
-            _isLiked.value = syncRepository.isLikedLocally(currentVideoId)
-            _isDisliked.value = syncRepository.isDislikedLocally(currentVideoId)
-            _isSubscribed.value = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName)
-            _relatedVideos.value = activeBundle.relatedVideos
-            _uploaderSubscriberText.value = activeBundle.uploaderSubscriberText
-            if (!activeBundle.uploaderAvatarUrl.isNullOrEmpty()) {
-                _channelAvatarUrl.value = activeBundle.uploaderAvatarUrl
-            }
-            if (_comments.value.isEmpty()) {
-                loadComments()
-            }
+        val hasPlayableMedia = activeBundle != null && (
+            !activeBundle.selectedVideoUrl.isNullOrEmpty() ||
+            activeBundle.selectedAudioUrl.isNotEmpty() ||
+            !activeBundle.hlsUrl.isNullOrEmpty() ||
+            playerController.player != null
+        )
+        if (activeBundle != null && (hasPlayableMedia || activeBundle.videoId == currentVideoId)) {
+            // Video ini sedang aktif diputar! Tampilkan UI langsung dan pertahankan pemutaran
+            syncWithActivePlayer(activeBundle)
         } else {
             // Rekam video ke riwayat pemutaran lokal dan YouTube
             loadVideo(currentVideoId, addToHistory = true)
         }
+    }
+
+    fun syncWithActivePlayer(activeBundle: StreamBundle) {
+        if (activeBundle.videoId.isEmpty()) return
+        currentVideoId = activeBundle.videoId
+        val hasPlayableMedia = !activeBundle.selectedVideoUrl.isNullOrEmpty() ||
+            activeBundle.selectedAudioUrl.isNotEmpty() ||
+            !activeBundle.hlsUrl.isNullOrEmpty()
+        if (hasPlayableMedia) {
+            _uiState.value = WatchUiState.Success(activeBundle)
+        } else {
+            _uiState.value = WatchUiState.Loading(
+                id.katube.data.model.VideoItem(
+                    id = activeBundle.videoId,
+                    url = "https://www.youtube.com/watch?v=${activeBundle.videoId}",
+                    title = activeBundle.title,
+                    uploaderName = activeBundle.uploaderName,
+                    uploaderAvatarUrl = activeBundle.uploaderAvatarUrl,
+                    thumbnailUrl = activeBundle.thumbnailUrl,
+                    durationSeconds = activeBundle.durationSeconds,
+                )
+            )
+        }
+        _relatedVideos.value = activeBundle.relatedVideos
+        _uploaderSubscriberText.value = activeBundle.uploaderSubscriberText
+        currentUploaderUrl = activeBundle.uploaderUrl.orEmpty()
+        currentUploaderName = activeBundle.uploaderName
+        sessionPlayedVideoIds.add(activeBundle.videoId)
+
+        if (!activeBundle.uploaderAvatarUrl.isNullOrEmpty()) {
+            _channelAvatarUrl.value = activeBundle.uploaderAvatarUrl
+        }
+
+        // Pulihkan status suka, tidak suka, dan subscribe untuk video ini
+        _isLiked.value = syncRepository.isLikedLocally(activeBundle.videoId)
+        _isDisliked.value = syncRepository.isDislikedLocally(activeBundle.videoId)
+        _isSubscribed.value = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName)
+
+        // Muat komentar serta metadata video baru ini seketika jika belum ada
+        if (_comments.value.isEmpty()) {
+            loadComments()
+        }
+
+        watchNextJob?.cancel()
+        watchNextJob = viewModelScope.launch {
+            syncRepository.fetchWatchNextRelated(activeBundle.videoId).onSuccess { data ->
+                if (!data.viewCountText.isNullOrBlank()) {
+                    _videoViewsText.value = data.viewCountText
+                }
+                if (!data.uploadDateText.isNullOrBlank()) {
+                    _videoUploadDateText.value = data.uploadDateText
+                }
+                if (!data.commentCountText.isNullOrBlank()) {
+                    _commentCountText.value = data.commentCountText
+                }
+                if (!data.commentTeaserText.isNullOrBlank()) {
+                    _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
+                }
+                if (!data.subscriberText.isNullOrBlank()) {
+                    _uploaderSubscriberText.value = data.subscriberText
+                }
+                if (!data.channelId.isNullOrEmpty()) {
+                    currentChannelId = data.channelId
+                }
+                val localSub = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName) ||
+                    (!data.channelId.isNullOrEmpty() && syncRepository.isSubscribedLocally(data.channelId))
+                _isSubscribed.value = (data.isSubscribed == true) || localSub
+
+                val isLocalLiked = syncRepository.isLikedLocally(activeBundle.videoId)
+                val isLocalDisliked = syncRepository.isDislikedLocally(activeBundle.videoId)
+                if (isLocalLiked || data.likeStatus == "LIKE") {
+                    _isLiked.value = true
+                    _isDisliked.value = false
+                } else if (isLocalDisliked || data.likeStatus == "DISLIKE") {
+                    _isLiked.value = false
+                    _isDisliked.value = true
+                }
+                if (data.relatedVideos.isNotEmpty()) {
+                    _relatedVideos.value = (activeBundle.relatedVideos + data.relatedVideos).distinctBy { it.id }
+                    playerController.updateRelatedVideos(data.relatedVideos)
+                }
+                nextRelatedContinuation = data.nextContinuation
+            }
+        }
+
+        syncRepository.recordLocalWatchHistory(id.katube.data.model.VideoItem(
+            id = activeBundle.videoId,
+            url = "https://www.youtube.com/watch?v=${activeBundle.videoId}",
+            title = activeBundle.title,
+            uploaderName = activeBundle.uploaderName,
+            uploaderAvatarUrl = activeBundle.uploaderAvatarUrl,
+            uploaderUrl = activeBundle.uploaderUrl,
+            durationSeconds = activeBundle.durationSeconds,
+            viewCount = activeBundle.viewCount,
+            uploadDateText = activeBundle.uploadDateText,
+            thumbnailUrl = activeBundle.thumbnailUrl,
+        ))
     }
 
     private suspend fun getEffectiveMaxHeight(): Int {
@@ -311,78 +301,8 @@ class WatchViewModel @Inject constructor(
             activeBundle.selectedAudioUrl.isNotEmpty() ||
             !activeBundle.hlsUrl.isNullOrEmpty()
         )
-        if (activeBundle != null && activeBundle.videoId == id && playerController.player != null && hasPlayableMedia) {
-            currentVideoId = id
-            _uiState.value = WatchUiState.Success(activeBundle)
-            if (_relatedVideos.value.isEmpty()) {
-                _relatedVideos.value = activeBundle.relatedVideos
-            }
-            if (!activeBundle.uploaderAvatarUrl.isNullOrEmpty() && _channelAvatarUrl.value.isNullOrEmpty()) {
-                _channelAvatarUrl.value = activeBundle.uploaderAvatarUrl
-            }
-            _uploaderSubscriberText.value = activeBundle.uploaderSubscriberText
-            currentUploaderUrl = activeBundle.uploaderUrl.orEmpty()
-            currentUploaderName = activeBundle.uploaderName
-
-            // Pulihkan status suka & tidak suka langsung dari repositori
-            if (syncRepository.isLikedLocally(id)) {
-                _isLiked.value = true
-                _isDisliked.value = false
-            } else if (syncRepository.isDislikedLocally(id)) {
-                _isLiked.value = false
-                _isDisliked.value = true
-            } else {
-                _isLiked.value = false
-                _isDisliked.value = false
-            }
-
-            // Pulihkan status langganan saluran
-            _isSubscribed.value = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName)
-
-            // Sinkronkan data sekunder lanjutan dari YouTube di latar belakang tanpa menginterupsi pemutaran aktif
-            watchNextJob?.cancel()
-            watchNextJob = viewModelScope.launch {
-                syncRepository.fetchWatchNextRelated(id).onSuccess { data ->
-                    if (!data.viewCountText.isNullOrBlank()) {
-                        _videoViewsText.value = data.viewCountText
-                    }
-                    if (!data.uploadDateText.isNullOrBlank()) {
-                        _videoUploadDateText.value = data.uploadDateText
-                    }
-                    if (!data.commentCountText.isNullOrBlank()) {
-                        _commentCountText.value = data.commentCountText
-                    }
-                    if (!data.commentTeaserText.isNullOrBlank()) {
-                        _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
-                    }
-                    if (!data.subscriberText.isNullOrBlank()) {
-                        _uploaderSubscriberText.value = data.subscriberText
-                    }
-                    if (!data.channelId.isNullOrEmpty()) {
-                        currentChannelId = data.channelId
-                    }
-                    val localSub = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName) ||
-                        (!data.channelId.isNullOrEmpty() && syncRepository.isSubscribedLocally(data.channelId))
-                    _isSubscribed.value = (data.isSubscribed == true) || localSub
-
-                    val isLocalLiked = syncRepository.isLikedLocally(id)
-                    val isLocalDisliked = syncRepository.isDislikedLocally(id)
-                    if (isLocalLiked || data.likeStatus == "LIKE") {
-                        _isLiked.value = true
-                        _isDisliked.value = false
-                    } else if (isLocalDisliked || data.likeStatus == "DISLIKE") {
-                        _isLiked.value = false
-                        _isDisliked.value = true
-                    }
-                    if (data.relatedVideos.isNotEmpty()) {
-                        _relatedVideos.value = (activeBundle.relatedVideos + data.relatedVideos).distinctBy { it.id }
-                        playerController.updateRelatedVideos(data.relatedVideos)
-                    }
-                    nextRelatedContinuation = data.nextContinuation
-                }
-            }
-
-            loadComments()
+        if (activeBundle != null && activeBundle.videoId == id && hasPlayableMedia) {
+            syncWithActivePlayer(activeBundle)
             return
         }
 
