@@ -879,124 +879,38 @@ fun WatchScreen(
                                         if (activeHeight > 0) "${activeHeight}p" else "Auto"
                                     }
 
-                                    Box {
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(12.dp))
-                                                .background(Color(0x66000000))
-                                                .clickable { showQualityMenu = true }
-                                                .padding(horizontal = 10.dp, vertical = 4.dp),
-                                            contentAlignment = Alignment.Center,
-                                        ) {
-                                            Text(
-                                                text = badgeLabel,
-                                                color = Color.White,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                            )
-                                        }
-
-                                        DropdownMenu(
-                                            expanded = showQualityMenu,
-                                            onDismissRequest = { showQualityMenu = false },
-                                        ) {
-                                            val qualityList = remember(bundle.availableQualities) {
-                                                val nonAuto = bundle.availableQualities
-                                                    .filter { it.height > 0 }
-                                                    .distinctBy { it.height }
-                                                    .sortedByDescending { it.height }
-                                                if (nonAuto.isNotEmpty()) {
-                                                    listOf(VideoQuality(height = 0, label = "Otomatis", url = "", isMuxed = false)) + nonAuto
-                                                } else {
-                                                    listOf(
-                                                        VideoQuality(height = 0, label = "Otomatis", url = "", isMuxed = false),
-                                                        VideoQuality(height = 1080, label = "1080p", url = "", isMuxed = false),
-                                                        VideoQuality(height = 720, label = "720p", url = "", isMuxed = false),
-                                                        VideoQuality(height = 480, label = "480p", url = "", isMuxed = false),
-                                                        VideoQuality(height = 360, label = "360p", url = "", isMuxed = false),
-                                                        VideoQuality(height = 240, label = "240p", url = "", isMuxed = false),
-                                                        VideoQuality(height = 144, label = "144p", url = "", isMuxed = false),
-                                                    )
-                                                }
-                                            }
-
-                                            qualityList.forEach { q ->
-                                                val isSelected = if (q.height <= 0) {
-                                                    isAutoQuality
-                                                } else {
-                                                    !isAutoQuality && (activeHeight == q.height || (activeHeight == 0 && q.height == 480))
-                                                }
-                                                val itemLabel = if (q.height <= 0) {
-                                                    if (activeHeight > 0) "Otomatis (${activeHeight}p)" else "Otomatis"
-                                                } else {
-                                                    "${q.height}p"
-                                                }
-
-                                                DropdownMenuItem(
-                                                    text = {
-                                                        Text(
-                                                            text = itemLabel,
-                                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                                            color = if (isSelected) Gold else MaterialTheme.colorScheme.onSurface,
-                                                        )
-                                                    },
-                                                    leadingIcon = if (isSelected) {
-                                                        {
-                                                            Icon(
-                                                                imageVector = Icons.Default.Check,
-                                                                contentDescription = null,
-                                                                tint = Gold,
-                                                                modifier = Modifier.size(18.dp),
-                                                            )
-                                                        }
-                                                    } else null,
-                                                    onClick = {
-                                                        viewModel.selectQuality(q)
-                                                        showQualityMenu = false
-                                                        android.widget.Toast.makeText(
-                                                            context,
-                                                            if (q.height <= 0) "Kualitas disetel ke Otomatis" else "Kualitas disetel ke ${q.height}p",
-                                                            android.widget.Toast.LENGTH_SHORT
-                                                        ).show()
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Badge Kecepatan (Contoh: "1x")
-                                Box {
                                     Box(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(12.dp))
                                             .background(Color(0x66000000))
-                                            .clickable { showSpeedMenu = true }
-                                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                                            .clickable { showQualityMenu = true }
+                                            .padding(horizontal = 10.dp, vertical = 4.dp),
                                         contentAlignment = Alignment.Center,
                                     ) {
                                         Text(
-                                            text = "${playbackSpeed}x",
+                                            text = badgeLabel,
                                             color = Color.White,
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.SemiBold,
                                         )
                                     }
+                                }
 
-                                    DropdownMenu(
-                                        expanded = showSpeedMenu,
-                                        onDismissRequest = { showSpeedMenu = false },
-                                    ) {
-                                        listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
-                                            DropdownMenuItem(
-                                                text = { Text("${speed}x") },
-                                                onClick = {
-                                                    playerController.setPlaybackSpeed(speed)
-                                                    showSpeedMenu = false
-                                                }
-                                            )
-                                        }
-                                    }
+                                // Badge Kecepatan (Contoh: "1x")
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0x66000000))
+                                        .clickable { showSpeedMenu = true }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = "${playbackSpeed}x",
+                                        color = Color.White,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
                                 }
 
                                 // Tombol Titik Tiga Pengaturan Player (Buka BottomSheet Sesuai Halaman 3 Referensi)
@@ -1185,6 +1099,241 @@ fun WatchScreen(
                                 .fillMaxWidth(playedFraction)
                                 .background(Gold),
                         )
+                    }
+                }
+            }
+
+            // Panel Pemilihan Kualitas Video Langsung di Dalam Video Player (Tidak Turun ke Bawah)
+            if (showQualityMenu) {
+                (currentStreamBundle ?: (uiState as? WatchUiState.Success)?.bundle)?.let { bundle ->
+                    val activeHeight = bundle.selectedHeight
+                    val qualityList = remember(bundle.availableQualities) {
+                        val nonAuto = bundle.availableQualities
+                            .filter { it.height > 0 }
+                            .distinctBy { it.height }
+                            .sortedByDescending { it.height }
+                        if (nonAuto.isNotEmpty()) {
+                            listOf(VideoQuality(height = 0, label = "Otomatis", url = "", isMuxed = false)) + nonAuto
+                        } else {
+                            listOf(
+                                VideoQuality(height = 0, label = "Otomatis", url = "", isMuxed = false),
+                                VideoQuality(height = 1080, label = "1080p", url = "", isMuxed = false),
+                                VideoQuality(height = 720, label = "720p", url = "", isMuxed = false),
+                                VideoQuality(height = 480, label = "480p", url = "", isMuxed = false),
+                                VideoQuality(height = 360, label = "360p", url = "", isMuxed = false),
+                                VideoQuality(height = 240, label = "240p", url = "", isMuxed = false),
+                                VideoQuality(height = 144, label = "144p", url = "", isMuxed = false),
+                            )
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .background(Color.Black.copy(alpha = 0.85f))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) { showQualityMenu = false },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                            modifier = Modifier
+                                .widthIn(max = 280.dp)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {},
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 12.dp, horizontal = 12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = "Kualitas Video",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White,
+                                    )
+                                    IconButton(
+                                        onClick = { showQualityMenu = false },
+                                        modifier = Modifier.size(28.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Tutup",
+                                            tint = Color.White.copy(alpha = 0.7f),
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 190.dp)
+                                ) {
+                                    items(qualityList) { q ->
+                                        val isSelected = if (q.height <= 0) {
+                                            isAutoQuality
+                                        } else {
+                                            !isAutoQuality && (activeHeight == q.height || (activeHeight == 0 && q.height == 480))
+                                        }
+                                        val itemLabel = if (q.height <= 0) {
+                                            if (activeHeight > 0) "Otomatis (${activeHeight}p)" else "Otomatis"
+                                        } else {
+                                            "${q.height}p"
+                                        }
+
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    viewModel.selectQuality(q)
+                                                    showQualityMenu = false
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (q.height <= 0) "Kualitas disetel ke Otomatis" else "Kualitas disetel ke ${q.height}p",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            if (isSelected) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    tint = Gold,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                            } else {
+                                                Spacer(modifier = Modifier.width(26.dp))
+                                            }
+                                            Text(
+                                                text = itemLabel,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (isSelected) Gold else Color.White,
+                                                fontSize = 14.sp,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Panel Pemilihan Kecepatan Pemutaran Langsung di Dalam Video Player
+            if (showSpeedMenu) {
+                val speedList = remember { listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f) }
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(Color.Black.copy(alpha = 0.85f))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { showSpeedMenu = false },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                        modifier = Modifier
+                            .widthIn(max = 260.dp)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {},
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp, horizontal = 12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "Kecepatan Pemutaran",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                )
+                                IconButton(
+                                    onClick = { showSpeedMenu = false },
+                                    modifier = Modifier.size(28.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Tutup",
+                                        tint = Color.White.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 190.dp)
+                            ) {
+                                items(speedList) { sp ->
+                                    val isSelected = (playbackSpeed == sp)
+                                    val label = if (sp == 1.0f) "Normal" else "${sp}x"
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                viewModel.setPlaybackSpeed(sp)
+                                                showSpeedMenu = false
+                                                Toast.makeText(context, "Kecepatan disetel ke $label", Toast.LENGTH_SHORT).show()
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        if (isSelected) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = Gold,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                        } else {
+                                            Spacer(modifier = Modifier.width(26.dp))
+                                        }
+                                        Text(
+                                            text = label,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) Gold else Color.White,
+                                            fontSize = 14.sp,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1930,8 +2079,16 @@ private fun WatchContent(
 
                 // Metadata: Jumlah Penonton & Waktu Unggah persis seperti YouTube
                 val viewsText = if (bundle.formattedViews.isNotEmpty()) "${bundle.formattedViews} ditonton" else ""
-                val cleanDate = bundle.uploadDateText.takeIf { !it.equals("LIVE", ignoreCase = true) }.orEmpty()
-                val dateText = TimeAgoUtils.format(null, cleanDate).ifEmpty { "Beberapa saat lalu" }
+                val isReallyLive = bundle.isLive && bundle.durationSeconds <= 0
+                val dateText = if (isReallyLive) {
+                    "LIVE"
+                } else {
+                    val raw = bundle.uploadDateText.orEmpty().trim()
+                    val cleanDate = if (raw.equals("LIVE", ignoreCase = true) || raw.equals("Sedang Live", ignoreCase = true) || raw.contains("LIVE", ignoreCase = true)) {
+                        ""
+                    } else raw
+                    TimeAgoUtils.format(null, cleanDate).ifEmpty { "Beberapa saat lalu" }
+                }
                 val metaText = listOf(viewsText, dateText).filter { it.isNotEmpty() }.joinToString(" • ")
                     .ifEmpty { "${bundle.durationSeconds / 60}m ${bundle.durationSeconds % 60}s" }
 
@@ -1971,19 +2128,19 @@ private fun WatchContent(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // 1. Suka / Dislike Combined Pill
+                // 1. Suka / Dislike Combined Pill (Persis YouTube Resmi)
                 Row(
                     modifier = Modifier
                         .height(36.dp)
                         .clip(RoundedCornerShape(18.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .padding(horizontal = 4.dp),
+                        .padding(horizontal = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Row(
                         modifier = Modifier
                             .clickable { onLikeClick() }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
@@ -1993,8 +2150,22 @@ private fun WatchContent(
                             modifier = Modifier.size(18.dp),
                         )
                         Spacer(modifier = Modifier.width(6.dp))
+                        val likeText = if (bundle.likeCount > 0) {
+                            val count = if (isLiked) bundle.likeCount + 1 else bundle.likeCount
+                            if (count >= 1_000_000) {
+                                String.format(java.util.Locale.US, "%.1f jt", count / 1_000_000.0)
+                            } else if (count >= 1_000) {
+                                String.format(java.util.Locale.US, "%.1f rb", count / 1000.0)
+                            } else {
+                                "$count"
+                            }
+                        } else if (bundle.formattedLikes.isNotEmpty()) {
+                            bundle.formattedLikes
+                        } else {
+                            "Suka"
+                        }
                         Text(
-                            text = if (isLiked) "Disukai" else bundle.formattedLikes,
+                            text = likeText,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (isLiked) Gold else MaterialTheme.colorScheme.onBackground,
@@ -2005,13 +2176,14 @@ private fun WatchContent(
                         modifier = Modifier
                             .height(18.dp)
                             .width(1.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant)
+                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     )
 
                     Box(
                         modifier = Modifier
                             .clickable { onDislikeClick() }
                             .padding(horizontal = 10.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center,
                     ) {
                         Icon(
                             imageVector = if (isDisliked) Icons.Default.ThumbDown else Icons.Outlined.ThumbDown,
@@ -2022,7 +2194,38 @@ private fun WatchContent(
                     }
                 }
 
-                // 2. Tambahkan Ke Daftar Putar (Playlist)
+                // 2. Bagikan (Share)
+                Button(
+                    onClick = {
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, bundle.title)
+                            putExtra(Intent.EXTRA_TEXT, "https://www.youtube.com/watch?v=${bundle.videoId}")
+                        }
+                        context.startActivity(Intent.createChooser(shareIntent, "Bagikan video"))
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onBackground,
+                    ),
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = "Bagikan",
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Bagikan",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+
+                // 3. Simpan ke Playlist (Persis YouTube)
                 Button(
                     onClick = onAddToPlaylistClick,
                     colors = ButtonDefaults.buttonColors(
@@ -2031,44 +2234,46 @@ private fun WatchContent(
                     ),
                     shape = RoundedCornerShape(18.dp),
                     modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
+                        contentDescription = "Simpan",
+                        modifier = Modifier.size(17.dp),
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Tambahkan Ke Daftar Putar",
+                        text = "Simpan",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
                     )
                 }
 
-                // 3. Putar di Latar Belakang
+                // 4. Putar di Latar Belakang / Audio Saja
                 Button(
                     onClick = onToggleAudioOnly,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (isAudioOnly) Gold else MaterialTheme.colorScheme.surfaceVariant,
-                        contentColor = if (isAudioOnly) MaterialTheme.colorScheme.background else MaterialTheme.colorScheme.onBackground,
+                        contentColor = if (isAudioOnly) Color.Black else MaterialTheme.colorScheme.onBackground,
                     ),
                     shape = RoundedCornerShape(18.dp),
                     modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 ) {
                     Icon(
                         imageVector = Icons.Default.Headphones,
-                        contentDescription = null,
+                        contentDescription = "Latar Belakang",
                         modifier = Modifier.size(16.dp),
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Putar di Latar Belakang",
+                        text = if (isAudioOnly) "Audio Aktif" else "Latar Belakang",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
                     )
                 }
 
-                // 4. Pop-up (PiP)
+                // 5. Pop-up (PiP)
                 Button(
                     onClick = {
                         (context as? MainActivity)?.enterPipMode()
@@ -2079,44 +2284,16 @@ private fun WatchContent(
                     ),
                     shape = RoundedCornerShape(18.dp),
                     modifier = Modifier.height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 ) {
                     Icon(
                         imageVector = Icons.Default.PictureInPictureAlt,
-                        contentDescription = null,
+                        contentDescription = "Pop-up",
                         modifier = Modifier.size(16.dp),
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "Pop-up",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                    )
-                }
-
-                // 5. Bagikan
-                Button(
-                    onClick = {
-                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                            putExtra(Intent.EXTRA_TEXT, "https://youtu.be/${bundle.videoId}")
-                            type = "text/plain"
-                        }
-                        context.startActivity(Intent.createChooser(sendIntent, "Bagikan video"))
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        contentColor = MaterialTheme.colorScheme.onBackground,
-                    ),
-                    shape = RoundedCornerShape(18.dp),
-                    modifier = Modifier.height(36.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Share,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = stringResource(R.string.action_share),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
                     )
@@ -2441,7 +2618,6 @@ private fun WatchContent(
             }
         }
     }
-    }
 
     // Modal Bottom Sheet Komentar Lengkap (Sesuai Referensi PDF Halaman 4 Kanan)
     if (showCommentsSheet) {
@@ -2619,6 +2795,7 @@ private fun WatchContent(
             }
         }
     }
+}
 }
 
 @Composable

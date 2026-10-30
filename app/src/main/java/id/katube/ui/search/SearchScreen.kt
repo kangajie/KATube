@@ -80,6 +80,7 @@ fun SearchScreen(
     val resultState by viewModel.resultState.collectAsState()
     val isLoadingMore by viewModel.isLoadingMore.collectAsState()
     val searchHistory by viewModel.searchHistory.collectAsState()
+    val searchHistoryEnabled by viewModel.searchHistoryEnabled.collectAsState()
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val focusRequester = remember { FocusRequester() }
@@ -226,8 +227,21 @@ fun SearchScreen(
             } else {
                 when (val state = resultState) {
                     is SearchResultState.Idle -> {
-                        // Layar awal: Tampilkan Riwayat Pencarian jika ada
-                        if (searchHistory.isNotEmpty()) {
+                        // Layar awal: Tampilkan Riwayat Pencarian jika diaktifkan di Pengaturan
+                        if (!searchHistoryEnabled) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(32.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text = "Riwayat penelusuran dijeda",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        } else if (searchHistory.isNotEmpty()) {
                             LazyColumn(modifier = Modifier.fillMaxSize()) {
                                 item {
                                     Row(

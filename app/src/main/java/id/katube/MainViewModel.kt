@@ -25,7 +25,7 @@ import javax.inject.Inject
 @HiltViewModel
 class MainViewModel @Inject constructor(
     val playerController: PlayerController,
-    private val preferencesRepository: UserPreferencesRepository,
+    val preferencesRepository: UserPreferencesRepository,
     private val authRepository: AuthRepository,
     private val syncRepository: id.katube.data.sync.YouTubeSyncRepository,
 ) : ViewModel() {

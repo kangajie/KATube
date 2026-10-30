@@ -21,6 +21,7 @@ import id.katube.data.notification.RecommendationNotificationManager
 import id.katube.ui.navigation.KATubeAppScaffold
 import id.katube.ui.settings.ThemeMode
 import id.katube.ui.theme.KATubeTheme
+import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 
 /**
@@ -103,6 +104,45 @@ class MainActivity : ComponentActivity() {
         if (::recommendationManager.isInitialized) {
             // Jadwalkan notifikasi rekomendasi setelah pengguna meninggalkan aplikasi (misal 2 jam)
             recommendationManager.scheduleDelayedRecommendation(120L)
+        }
+
+        // Cek preferensi pemutaran di latar belakang (backgroundPlayMode) dari Pengaturan
+        val isPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInPictureInPictureMode else false
+        if (!isPip && mainViewModel.playerController.isPlaying.value) {
+            val allowBackground = shouldAllowBackgroundPlay()
+            if (!allowBackground) {
+                mainViewModel.playerController.pause()
+            }
+        }
+    }
+
+    private fun shouldAllowBackgroundPlay(): Boolean {
+        val mode = runCatching {
+            kotlinx.coroutines.runBlocking {
+                mainViewModel.preferencesRepository.backgroundPlayMode.first()
+            }
+        }.getOrDefault("Selalu aktif")
+
+        return when (mode) {
+            "Nonaktif" -> false
+            "Hanya headset" -> {
+                val audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    audioManager?.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)?.any {
+                        it.type in listOf(
+                            android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                            android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                            android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                            android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                            android.media.AudioDeviceInfo.TYPE_USB_HEADSET
+                        )
+                    } == true
+                } else {
+                    @Suppress("DEPRECATION")
+                    (audioManager?.isWiredHeadsetOn == true || audioManager?.isBluetoothA2dpOn == true)
+                }
+            }
+            else -> true
         }
     }
 

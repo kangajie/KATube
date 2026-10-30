@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -50,6 +51,13 @@ class SearchViewModel @Inject constructor(
             initialValue = emptyList(),
         )
 
+    val searchHistoryEnabled: StateFlow<Boolean> = preferencesRepository.searchHistoryEnabled
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = true,
+        )
+
     private val searchVideos = mutableListOf<VideoItem>()
     private var searchPageIndex = 0
     private var isCurrentlyLoadingMore = false
@@ -78,10 +86,12 @@ class SearchViewModel @Inject constructor(
         _query.value = trimmed
         _suggestions.value = emptyList()
 
-        // Catat pencarian ke riwayat lokal & sinkronkan ke server YouTube jika akun login
+        // Catat pencarian ke riwayat lokal & sinkronkan ke server YouTube jika diaktifkan di Pengaturan
         viewModelScope.launch {
-            preferencesRepository.addSearchQuery(trimmed)
-            syncRepository.recordSearchQuery(trimmed)
+            if (preferencesRepository.searchHistoryEnabled.first()) {
+                preferencesRepository.addSearchQuery(trimmed)
+                syncRepository.recordSearchQuery(trimmed)
+            }
         }
 
         viewModelScope.launch {

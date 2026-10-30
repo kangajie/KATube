@@ -33,11 +33,19 @@ object TimeAgoUtils {
 
         // 2. Parse dari rawDateText
         if (!rawDateText.isNullOrBlank()) {
-            val formatted = formatFromRawText(rawDateText.trim())
+            val trimmed = rawDateText.trim()
+            if (trimmed.equals("LIVE", ignoreCase = true) || trimmed.equals("Sedang Live", ignoreCase = true)) {
+                return ""
+            }
+            val formatted = formatFromRawText(trimmed)
             if (formatted.isNotEmpty()) return formatted
         }
 
-        return rawDateText.orEmpty()
+        val fallback = rawDateText.orEmpty().trim()
+        if (fallback.equals("LIVE", ignoreCase = true) || fallback.equals("Sedang Live", ignoreCase = true)) {
+            return ""
+        }
+        return fallback
     }
 
     fun formatFromInstant(instant: Instant): String {
@@ -74,15 +82,27 @@ object TimeAgoUtils {
     }
 
     private val ENGLISH_TIME_PATTERN = Pattern.compile(
-        """(?i)(?:streamed\s+)?(\d+)\s+(second|sec|minute|min|hour|hr|day|week|month|year)s?\s+ago"""
+        """(?i)(?:streamed\s+(?:live\s+)?|premiered\s+)?(\d+)\s+(second|sec|minute|min|hour|hr|day|week|month|year)s?\s+ago"""
     )
     private val INDO_TIME_PATTERN = Pattern.compile(
-        """(?i)(\d+)\s+(detik|menit|jam|hari|minggu|bulan|tahun)\s*(?:yang\s+)?lalu"""
+        """(?i)(?:ditayangkan\s+perdana\s+|streaming\s+langsung\s+)?(\d+)\s+(detik|menit|jam|hari|minggu|bulan|tahun)\s*(?:yang\s+)?lalu"""
     )
 
     fun formatFromRawText(text: String): String {
-        val trimmed = text.trim()
+        var trimmed = text.trim()
         if (trimmed.isEmpty()) return ""
+
+        // Bersihkan awalan siaran atau penayangan perdana YouTube
+        val lower = trimmed.lowercase()
+        if (lower.startsWith("streamed live on ")) {
+            trimmed = trimmed.substring(17).trim()
+        } else if (lower.startsWith("streamed on ")) {
+            trimmed = trimmed.substring(12).trim()
+        } else if (lower.startsWith("premiered on ")) {
+            trimmed = trimmed.substring(13).trim()
+        } else if (lower.startsWith("ditayangkan perdana pada ")) {
+            trimmed = trimmed.substring(25).trim()
+        }
 
         // Pola bahasa Inggris
         val engMatcher = ENGLISH_TIME_PATTERN.matcher(trimmed)

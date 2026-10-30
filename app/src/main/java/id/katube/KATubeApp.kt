@@ -9,6 +9,10 @@ import org.schabi.newpipe.extractor.localization.ContentCountry
 import org.schabi.newpipe.extractor.localization.Localization
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /**
  * Application class — titik masuk utama.
@@ -24,11 +28,32 @@ class KATubeApp : Application() {
     @Inject
     lateinit var recommendationNotificationManager: id.katube.data.notification.RecommendationNotificationManager
 
+    @Inject
+    lateinit var preferencesRepository: id.katube.data.preferences.UserPreferencesRepository
+
     override fun onCreate() {
         super.onCreate()
         initNewPipe()
         initCoilCache()
         initRecommendationNotifications()
+        applyStoredLocalization()
+    }
+
+    private fun applyStoredLocalization() {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                if (::preferencesRepository.isInitialized) {
+                    val country = preferencesRepository.contentCountry.first()
+                    val lang = preferencesRepository.appLanguage.first()
+                    val langCode = if (lang.contains("English", ignoreCase = true)) "en" else "id"
+                    NewPipe.init(
+                        NewPipe.getDownloader(),
+                        Localization(langCode, country),
+                        ContentCountry(country)
+                    )
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     private fun initNewPipe() {

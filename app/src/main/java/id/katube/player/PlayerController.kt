@@ -34,6 +34,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
@@ -213,6 +214,21 @@ class PlayerController @Inject constructor(
         scope.launch {
             preferencesRepository.defaultQuality.collect { quality ->
                 _isAutoQuality.value = (quality <= 0)
+            }
+        }
+        scope.launch {
+            preferencesRepository.defaultSpeed.collect { speed ->
+                if (speed > 0f) {
+                    _playbackSpeed.value = speed
+                    mediaController?.setPlaybackSpeed(speed)
+                }
+            }
+        }
+        scope.launch {
+            preferencesRepository.defaultAudioOnly.collect { audioOnly ->
+                if (_currentStreamBundle.value == null) {
+                    _isAudioOnly.value = audioOnly
+                }
             }
         }
     }
@@ -1009,13 +1025,37 @@ class PlayerController @Inject constructor(
     }
 
     fun playVideo(bundle: StreamBundle, audioOnly: Boolean = false, addToHistory: Boolean = true, startPositionMs: Long = 0L) {
-        cacheStreamBundle(bundle)
+        // 1. Sesuaikan otomatis resolusi stream dengan preferensi pengguna di Pengaturan
+        val effectiveMaxHeight = runBlocking {
+            try { getEffectiveMaxHeight() } catch (_: Exception) { 0 }
+        }
+        val targetBundle = if (effectiveMaxHeight > 0 && bundle.availableQualities.isNotEmpty() && bundle.selectedHeight != effectiveMaxHeight) {
+            val exactStream = bundle.availableQualities.firstOrNull { it.height == effectiveMaxHeight && it.url.isNotEmpty() }
+                ?: bundle.availableQualities.filter { it.height in 1..effectiveMaxHeight && it.url.isNotEmpty() }.maxByOrNull { it.height }
+            if (exactStream != null) {
+                val audioUrlToUse = if (exactStream.isMuxed) "" else bundle.selectedAudioUrl.ifEmpty { bundle.fallbackAudioUrl.orEmpty() }
+                bundle.copy(
+                    selectedVideoUrl = exactStream.url,
+                    selectedAudioUrl = audioUrlToUse,
+                    selectedHeight = exactStream.height,
+                )
+            } else bundle
+        } else bundle
+
+        setIsAutoQuality(effectiveMaxHeight <= 0)
+
+        // 2. Sesuaikan otomatis mode audio-only dengan preferensi pengguna
+        val effectiveAudioOnly = audioOnly || runBlocking {
+            try { preferencesRepository.defaultAudioOnly.first() } catch (_: Exception) { false }
+        }
+
+        cacheStreamBundle(targetBundle)
         startPlaybackService()
         acquireWakeLocks()
         isTransitioningAutoplay = false
         isPreparingNewVideo = false
         val previousBundle = _currentStreamBundle.value
-        if (previousBundle != null && previousBundle.videoId.isNotEmpty() && previousBundle.videoId != bundle.videoId) {
+        if (previousBundle != null && previousBundle.videoId.isNotEmpty() && previousBundle.videoId != targetBundle.videoId) {
             try {
                 streamingClient.dispatcher.cancelAll()
             } catch (_: Exception) {}
@@ -1025,20 +1065,20 @@ class PlayerController @Inject constructor(
         }
 
         // Catat video yang baru diputar ini ke riwayat (Room lokal & akun YouTube jika login)
-        if (bundle.videoId.isNotEmpty()) {
+        if (targetBundle.videoId.isNotEmpty()) {
             val playedVideo = id.katube.data.model.VideoItem(
-                id = bundle.videoId,
-                url = "https://www.youtube.com/watch?v=${bundle.videoId}",
-                title = bundle.title,
-                uploaderName = bundle.uploaderName,
-                uploaderAvatarUrl = bundle.uploaderAvatarUrl,
-                uploaderUrl = bundle.uploaderUrl,
-                durationSeconds = bundle.durationSeconds,
-                viewCount = bundle.viewCount,
-                uploadDateText = bundle.uploadDateText,
-                thumbnailUrl = bundle.thumbnailUrl,
+                id = targetBundle.videoId,
+                url = "https://www.youtube.com/watch?v=${targetBundle.videoId}",
+                title = targetBundle.title,
+                uploaderName = targetBundle.uploaderName,
+                uploaderAvatarUrl = targetBundle.uploaderAvatarUrl,
+                uploaderUrl = targetBundle.uploaderUrl,
+                durationSeconds = targetBundle.durationSeconds,
+                viewCount = targetBundle.viewCount,
+                uploadDateText = targetBundle.uploadDateText,
+                thumbnailUrl = targetBundle.thumbnailUrl,
                 playbackPositionMs = startPositionMs,
-                playbackPercent = if (bundle.durationSeconds > 0) (startPositionMs.toFloat() / (bundle.durationSeconds * 1000f)).coerceIn(0f, 1f) else 0f
+                playbackPercent = if (targetBundle.durationSeconds > 0) (startPositionMs.toFloat() / (targetBundle.durationSeconds * 1000f)).coerceIn(0f, 1f) else 0f
             )
             syncRepository.recordLocalWatchHistory(playedVideo)
         }
@@ -1046,7 +1086,7 @@ class PlayerController @Inject constructor(
         // Validasi apakah video yang diputar merupakan bagian dari antrean playlist aktif
         val activePl = _currentPlaylist.value
         if (activePl != null) {
-            val idx = activePl.videos.indexOfFirst { it.id == bundle.videoId }
+            val idx = activePl.videos.indexOfFirst { it.id == targetBundle.videoId }
             if (idx >= 0) {
                 _currentIndex.value = idx
             } else {
@@ -1056,19 +1096,19 @@ class PlayerController @Inject constructor(
             }
         }
 
-        _currentStreamBundle.value = bundle
-        _isAudioOnly.value = audioOnly
+        _currentStreamBundle.value = targetBundle
+        _isAudioOnly.value = effectiveAudioOnly
         _isMiniPlayerVisible.value = true
         pendingSeekPositionMs = startPositionMs
 
-        val detected = extractArtistKeyword(bundle.title, bundle.uploaderName)
+        val detected = extractArtistKeyword(targetBundle.title, targetBundle.uploaderName)
         if (!detected.isNullOrBlank()) {
             activeArtistKeyword = detected
         }
 
         val controller = mediaController
         if (controller == null) {
-            pendingPlayBundle = Triple(bundle, audioOnly, startPositionMs)
+            pendingPlayBundle = Triple(targetBundle, effectiveAudioOnly, startPositionMs)
             return
         }
 
@@ -1076,26 +1116,26 @@ class PlayerController @Inject constructor(
         val subLangs = ArrayList<String>()
         val subLabels = ArrayList<String>()
         val subFormats = ArrayList<String>()
-        bundle.availableSubtitles.forEach { sub ->
+        targetBundle.availableSubtitles.forEach { sub ->
             subUrls.add(sub.url)
             subLangs.add(sub.languageCode)
             subLabels.add(sub.displayLabel)
             subFormats.add(sub.format)
         }
 
-        val effectiveAudioUrl = if (bundle.selectedAudioUrl.isNotEmpty()) bundle.selectedAudioUrl else bundle.fallbackAudioUrl
+        val effectiveAudioUrl = if (targetBundle.selectedAudioUrl.isNotEmpty()) targetBundle.selectedAudioUrl else targetBundle.fallbackAudioUrl
         val extras = Bundle().apply {
-            putString("video_url", if (audioOnly) null else bundle.selectedVideoUrl)
-            putString("audio_url", if (audioOnly) effectiveAudioUrl else bundle.selectedAudioUrl.ifEmpty { null })
-            putBoolean("is_live", bundle.isLive)
-            putString("hls_url", bundle.hlsUrl)
+            putString("video_url", if (effectiveAudioOnly) null else targetBundle.selectedVideoUrl)
+            putString("audio_url", if (effectiveAudioOnly) effectiveAudioUrl else targetBundle.selectedAudioUrl.ifEmpty { null })
+            putBoolean("is_live", targetBundle.isLive)
+            putString("hls_url", targetBundle.hlsUrl)
             putStringArrayList("sub_urls", subUrls)
             putStringArrayList("sub_langs", subLangs)
             putStringArrayList("sub_labels", subLabels)
             putStringArrayList("sub_formats", subFormats)
         }
 
-        val thumbUrl = bundle.thumbnailUrl
+        val thumbUrl = targetBundle.thumbnailUrl
         var initialArtworkData: ByteArray? = null
         if (!thumbUrl.isNullOrEmpty()) {
             val memoryBitmap = (coil.Coil.imageLoader(context).memoryCache?.get(coil.memory.MemoryCache.Key(thumbUrl)))?.bitmap
@@ -1107,10 +1147,10 @@ class PlayerController @Inject constructor(
         }
 
         val metadataBuilder = MediaMetadata.Builder()
-            .setTitle(bundle.title)
-            .setArtist(bundle.uploaderName)
-            .setDisplayTitle(bundle.title)
-            .setSubtitle(bundle.uploaderName)
+            .setTitle(targetBundle.title)
+            .setArtist(targetBundle.uploaderName)
+            .setDisplayTitle(targetBundle.title)
+            .setSubtitle(targetBundle.uploaderName)
             .setArtworkUri(thumbUrl?.let { Uri.parse(it) })
             .setExtras(extras)
 
@@ -1119,7 +1159,7 @@ class PlayerController @Inject constructor(
         }
         val metadata = metadataBuilder.build()
 
-        val subtitleConfigs = bundle.availableSubtitles.map { sub ->
+        val subtitleConfigs = targetBundle.availableSubtitles.map { sub ->
             val mimeType = if (sub.format.contains("ttml", ignoreCase = true)) {
                 MimeTypes.APPLICATION_TTML
             } else {
@@ -1132,9 +1172,9 @@ class PlayerController @Inject constructor(
                 .build()
         }
 
-        val mediaUri = if (audioOnly) effectiveAudioUrl else (bundle.selectedVideoUrl ?: effectiveAudioUrl)
+        val mediaUri = if (effectiveAudioOnly) effectiveAudioUrl else (targetBundle.selectedVideoUrl ?: effectiveAudioUrl)
         val mediaItem = MediaItem.Builder()
-            .setMediaId(bundle.videoId)
+            .setMediaId(targetBundle.videoId)
             .setUri(mediaUri)
             .setSubtitleConfigurations(subtitleConfigs)
             .setMediaMetadata(metadata)
@@ -1155,6 +1195,17 @@ class PlayerController @Inject constructor(
         _bufferedPositionMs.value = 0L
         startProgressTracking()
 
+        // Terapkan kecepatan default dari preferensi
+        scope.launch {
+            try {
+                val speed = preferencesRepository.defaultSpeed.first()
+                if (speed > 0f) {
+                    controller.setPlaybackSpeed(speed)
+                    _playbackSpeed.value = speed
+                }
+            } catch (_: Exception) {}
+        }
+
         // Sinkronisasi preferensi teks / subtitle pengguna
         scope.launch {
             val mode = try { preferencesRepository.subtitleMode.first() } catch (_: Exception) { "Otomatis" }
@@ -1162,11 +1213,19 @@ class PlayerController @Inject constructor(
                 "Nonaktif" -> {
                     setSubtitleLanguage("OFF")
                 }
+                "Bahasa Indonesia" -> {
+                    val indonesian = targetBundle.availableSubtitles.firstOrNull { it.languageCode.equals("id", ignoreCase = true) || it.languageCode.startsWith("id-", ignoreCase = true) }
+                    if (indonesian != null) setSubtitleLanguage(indonesian.languageCode) else setSubtitleLanguage("OFF")
+                }
+                "English" -> {
+                    val english = targetBundle.availableSubtitles.firstOrNull { it.languageCode.equals("en", ignoreCase = true) || it.languageCode.startsWith("en-", ignoreCase = true) }
+                    if (english != null) setSubtitleLanguage(english.languageCode) else setSubtitleLanguage("OFF")
+                }
                 else -> {
                     // Otomatis / Selalu aktif: prioritaskan Bahasa Indonesia, lalu Bahasa Inggris, lalu bahasa pertama
-                    val indonesian = bundle.availableSubtitles.firstOrNull { it.languageCode.equals("id", ignoreCase = true) || it.languageCode.startsWith("id-", ignoreCase = true) }
-                    val english = bundle.availableSubtitles.firstOrNull { it.languageCode.equals("en", ignoreCase = true) || it.languageCode.startsWith("en-", ignoreCase = true) }
-                    val defaultChoice = indonesian ?: english ?: bundle.availableSubtitles.firstOrNull()
+                    val indonesian = targetBundle.availableSubtitles.firstOrNull { it.languageCode.equals("id", ignoreCase = true) || it.languageCode.startsWith("id-", ignoreCase = true) }
+                    val english = targetBundle.availableSubtitles.firstOrNull { it.languageCode.equals("en", ignoreCase = true) || it.languageCode.startsWith("en-", ignoreCase = true) }
+                    val defaultChoice = indonesian ?: english ?: targetBundle.availableSubtitles.firstOrNull()
                     if (defaultChoice != null) {
                         setSubtitleLanguage(defaultChoice.languageCode)
                     } else {

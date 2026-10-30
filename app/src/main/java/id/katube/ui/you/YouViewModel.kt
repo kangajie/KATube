@@ -12,16 +12,27 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+import id.katube.data.preferences.UserPreferencesRepository
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
+
 @HiltViewModel
 class YouViewModel @Inject constructor(
     private val syncRepository: YouTubeSyncRepository,
     private val authRepository: AuthRepository,
+    private val preferencesRepository: UserPreferencesRepository,
 ) : ViewModel() {
 
     val watchHistory: StateFlow<List<VideoItem>> = syncRepository.watchHistory
     val userPlaylists: StateFlow<List<PlaylistItem>> = syncRepository.userPlaylists
     val isSyncing: StateFlow<Boolean> = syncRepository.isSyncing
     val syncStatus: StateFlow<String> = syncRepository.syncStatus
+    val watchHistoryEnabled: StateFlow<Boolean> = preferencesRepository.watchHistoryEnabled
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = true,
+        )
 
     private var lastHistoryRefreshTime = 0L
 

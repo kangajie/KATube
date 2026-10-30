@@ -123,6 +123,7 @@ fun YouScreen(
     val isLoggedIn by mainViewModel.isLoggedIn.collectAsState()
     val themeMode by settingsViewModel.themeMode.collectAsState()
     val watchHistory by youViewModel.watchHistory.collectAsState()
+    val watchHistoryEnabled by youViewModel.watchHistoryEnabled.collectAsState()
     val userPlaylists by youViewModel.userPlaylists.collectAsState()
     val isSyncing by youViewModel.isSyncing.collectAsState()
     val syncStatus by youViewModel.syncStatus.collectAsState()
@@ -377,12 +378,23 @@ fun YouScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = "Riwayat",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Riwayat",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground,
+                        )
+                        if (!watchHistoryEnabled) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "(Dijeda)",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
                     if (watchHistory.isNotEmpty()) {
                         Surface(
                             onClick = { showHistorySheet = true },

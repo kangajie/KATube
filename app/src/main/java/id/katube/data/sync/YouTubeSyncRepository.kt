@@ -1746,8 +1746,8 @@ class YouTubeSyncRepository @Inject constructor(
                     }
 
                     // Cek status subscribe jika belum didapat: periksa dari daftar langganan akun
-                    if (isSubscribed == null && !channelId.isNullOrEmpty()) {
-                        isSubscribed = _subscribedChannels.value.any { it.id == channelId }
+                    if (isSubscribed != true && !channelId.isNullOrEmpty()) {
+                        isSubscribed = _subscribedChannels.value.any { it.id == channelId } || isSubscribedLocally(channelId)
                     }
 
                     // Cek status like dari likeStatusEntity di seluruh struktur respon

@@ -196,13 +196,16 @@ class WatchViewModel @Inject constructor(
                             if (!data.channelId.isNullOrEmpty()) {
                                 currentChannelId = data.channelId
                             }
-                            if (data.isSubscribed != null) {
-                                _isSubscribed.value = data.isSubscribed
-                            }
-                            if (data.likeStatus == "LIKE" || syncRepository.isLikedLocally(activeBundle.videoId)) {
+                            val localSub = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName) ||
+                                (!data.channelId.isNullOrEmpty() && syncRepository.isSubscribedLocally(data.channelId))
+                            _isSubscribed.value = (data.isSubscribed == true) || localSub
+
+                            val isLocalLiked = syncRepository.isLikedLocally(activeBundle.videoId)
+                            val isLocalDisliked = syncRepository.isDislikedLocally(activeBundle.videoId)
+                            if (isLocalLiked || data.likeStatus == "LIKE") {
                                 _isLiked.value = true
                                 _isDisliked.value = false
-                            } else if (data.likeStatus == "DISLIKE") {
+                            } else if (isLocalDisliked || data.likeStatus == "DISLIKE") {
                                 _isLiked.value = false
                                 _isDisliked.value = true
                             }
@@ -310,13 +313,16 @@ class WatchViewModel @Inject constructor(
                     if (!data.channelId.isNullOrEmpty()) {
                         currentChannelId = data.channelId
                     }
-                    if (data.isSubscribed != null) {
-                        _isSubscribed.value = data.isSubscribed
-                    }
-                    if (data.likeStatus == "LIKE" || syncRepository.isLikedLocally(id)) {
+                    val localSub = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName) ||
+                        (!data.channelId.isNullOrEmpty() && syncRepository.isSubscribedLocally(data.channelId))
+                    _isSubscribed.value = (data.isSubscribed == true) || localSub
+
+                    val isLocalLiked = syncRepository.isLikedLocally(id)
+                    val isLocalDisliked = syncRepository.isDislikedLocally(id)
+                    if (isLocalLiked || data.likeStatus == "LIKE") {
                         _isLiked.value = true
                         _isDisliked.value = false
-                    } else if (data.likeStatus == "DISLIKE") {
+                    } else if (isLocalDisliked || data.likeStatus == "DISLIKE") {
                         _isLiked.value = false
                         _isDisliked.value = true
                     }
@@ -382,13 +388,16 @@ class WatchViewModel @Inject constructor(
                 if (!data.commentTeaserText.isNullOrEmpty()) {
                     _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
                 }
-                if (data.isSubscribed != null) {
-                    _isSubscribed.value = data.isSubscribed
-                }
-                if (data.likeStatus == "LIKE" || syncRepository.isLikedLocally(id)) {
+                val localSub = checkSubscribedLocally(previewItem?.uploaderUrl, previewItem?.uploaderName) ||
+                    (!data.channelId.isNullOrEmpty() && syncRepository.isSubscribedLocally(data.channelId))
+                _isSubscribed.value = (data.isSubscribed == true) || localSub
+
+                val isLocalLiked = syncRepository.isLikedLocally(id)
+                val isLocalDisliked = syncRepository.isDislikedLocally(id)
+                if (isLocalLiked || data.likeStatus == "LIKE") {
                     _isLiked.value = true
                     _isDisliked.value = false
-                } else if (data.likeStatus == "DISLIKE") {
+                } else if (isLocalDisliked || data.likeStatus == "DISLIKE") {
                     _isLiked.value = false
                     _isDisliked.value = true
                 }
@@ -1020,6 +1029,10 @@ class WatchViewModel @Inject constructor(
                 }
             )
         }
+    }
+
+    fun setPlaybackSpeed(speed: Float) {
+        playerController.setPlaybackSpeed(speed)
     }
 
     override fun onCleared() {
