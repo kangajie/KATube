@@ -511,7 +511,13 @@ class PlayerController @Inject constructor(
 
         // Selaraskan PlaylistItem virtual agar UI antrean selalu sinkron dan tidak hilang
         val existingPl = _currentPlaylist.value
-        _currentPlaylist.value = if (existingPl != null) {
+        _currentPlaylist.value = if (existingPl != null && existingPl.id == "KATUBE_QUEUE") {
+            existingPl.copy(
+                videos = currentList,
+                streamCount = currentList.size.toLong(),
+                uploaderName = "${currentList.size} video"
+            )
+        } else if (existingPl != null) {
             existingPl.copy(
                 videos = currentList,
                 streamCount = currentList.size.toLong()
@@ -561,7 +567,13 @@ class PlayerController @Inject constructor(
 
         // Selaraskan PlaylistItem virtual
         val existingPl = _currentPlaylist.value
-        _currentPlaylist.value = if (existingPl != null) {
+        _currentPlaylist.value = if (existingPl != null && existingPl.id == "KATUBE_QUEUE") {
+            existingPl.copy(
+                videos = currentList,
+                streamCount = currentList.size.toLong(),
+                uploaderName = "${currentList.size} video"
+            )
+        } else if (existingPl != null) {
             existingPl.copy(
                 videos = currentList,
                 streamCount = currentList.size.toLong()
@@ -633,7 +645,8 @@ class PlayerController @Inject constructor(
                 val updatedVideos = pl.videos.filter { it.id != videoId }
                 _currentPlaylist.value = pl.copy(
                     videos = updatedVideos,
-                    streamCount = updatedVideos.size.toLong()
+                    streamCount = updatedVideos.size.toLong(),
+                    uploaderName = if (pl.id == "KATUBE_QUEUE") "${updatedVideos.size} video" else pl.uploaderName
                 )
             }
 
@@ -1181,6 +1194,11 @@ class PlayerController @Inject constructor(
     fun prepareForNewVideo(targetVideoId: String, previewItem: id.katube.data.model.VideoItem? = null) {
         val current = _currentStreamBundle.value
         if (current == null || current.videoId != targetVideoId) {
+            val inQueue = _queue.value.any { it.id == targetVideoId } ||
+                _currentPlaylist.value?.videos?.any { it.id == targetVideoId } == true
+            if (!inQueue) {
+                clearPlaylistQueue()
+            }
             isPreparingNewVideo = true
             cancelBufferingWatchdog()
             try {
@@ -1307,6 +1325,9 @@ class PlayerController @Inject constructor(
             val pIdx = _currentPlaylist.value?.videos?.indexOfFirst { it.id == targetBundle.videoId } ?: -1
             if (pIdx >= 0) {
                 _currentIndex.value = pIdx
+            } else {
+                // Video yang diputar bukan bagian dari antrean/playlist aktif -> bersihkan antrean
+                clearPlaylistQueue()
             }
         }
 

@@ -1370,7 +1370,11 @@ fun WatchScreen(
             val hasQueue = (currentPlaylist != null && queue.isNotEmpty()) || queue.size > 1
             if (hasQueue) {
                 val qName = currentPlaylist?.name ?: "Daftar Antrean"
-                val qUploader = currentPlaylist?.uploaderName?.ifBlank { "${queue.size} video" } ?: "${queue.size} video"
+                val qUploader = if (currentPlaylist == null || currentPlaylist?.id == "KATUBE_QUEUE") {
+                    "${queue.size} video"
+                } else {
+                    currentPlaylist?.uploaderName?.ifBlank { "${queue.size} video" } ?: "${queue.size} video"
+                }
                 PlaylistQueueBanner(
                     playlistName = qName,
                     uploaderName = qUploader,
