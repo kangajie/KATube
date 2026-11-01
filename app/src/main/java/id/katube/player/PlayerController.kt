@@ -168,6 +168,17 @@ class PlayerController @Inject constructor(
     private val _isAutoQuality = MutableStateFlow(true)
     val isAutoQuality: StateFlow<Boolean> = _isAutoQuality.asStateFlow()
 
+    private val _isAppInForeground = MutableStateFlow(true)
+    val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
+
+    private val _isInPipMode = MutableStateFlow(false)
+    val isInPipMode: StateFlow<Boolean> = _isInPipMode.asStateFlow()
+
+    fun setAppForegroundState(inForeground: Boolean, inPip: Boolean = false) {
+        _isAppInForeground.value = inForeground
+        _isInPipMode.value = inPip
+    }
+
     private val _repeatMode = MutableStateFlow(RepeatMode.OFF)
     val repeatMode: StateFlow<RepeatMode> = _repeatMode.asStateFlow()
 
@@ -300,9 +311,21 @@ class PlayerController @Inject constructor(
 
         acquireWakeLocks(30_000L)
 
-        // Hanya pantau jika video memang sudah di detik-detik akhir (habis)
-        // Jika buffering di tengah video, biarkan saja (jangan diganti lagu)!
-        if (isNearEnd) {
+        // 1. Pantau jika video macet buffering di awal start/transisi (pos <= 1000ms)
+        if (pos <= 1000L && player.playWhenReady) {
+            bufferingWatchdogJob = scope.launch {
+                delay(3500)
+                val ctrl = mediaController
+                if (ctrl?.playbackState == Player.STATE_BUFFERING && (ctrl.currentPosition <= 1000L) && ctrl.playWhenReady) {
+                    try {
+                        // Kickstart decoding pipeline jika sinkronisasi keyframe awal tersendat
+                        ctrl.seekTo(150)
+                        ctrl.play()
+                    } catch (_: Exception) {}
+                }
+            }
+        } else if (isNearEnd) {
+            // 2. Pantau jika video habis di detik-detik akhir
             bufferingWatchdogJob = scope.launch {
                 delay(1800)
                 if (mediaController?.playbackState == Player.STATE_BUFFERING && !isTransitioningAutoplay) {
@@ -316,7 +339,7 @@ class PlayerController @Inject constructor(
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _isPlaying.value = isPlaying
-                if (isPlaying) {
+                if (isPlaying || player.playWhenReady) {
                     acquireWakeLocks()
                     startProgressTracking()
                 } else {
@@ -325,7 +348,8 @@ class PlayerController @Inject constructor(
                     if (state == Player.STATE_IDLE || state == Player.STATE_ENDED) {
                         stopProgressTracking()
                     }
-                    if (!isTransitioningAutoplay && state != Player.STATE_BUFFERING) {
+                    // Hanya lepas wake lock jika user benar-benar PAUSE (playWhenReady == false) dan tidak sedang transisi
+                    if (!isTransitioningAutoplay && !player.playWhenReady) {
                         releaseWakeLocks()
                     }
                     val currentVideoId = _currentStreamBundle.value?.videoId.orEmpty()
@@ -361,7 +385,7 @@ class PlayerController @Inject constructor(
                 } else if (playbackState == Player.STATE_ENDED) {
                     cancelBufferingWatchdog()
                     stopProgressTracking()
-                    handlePlaybackEnded()
+                    handlePlaybackEnded(fromStateEnded = true)
                 } else if (playbackState == Player.STATE_IDLE) {
                     cancelBufferingWatchdog()
                     stopProgressTracking()
@@ -392,26 +416,26 @@ class PlayerController @Inject constructor(
     @Volatile
     private var lastPlaybackEndedTimestamp: Long = 0L
 
-    fun handlePlaybackEnded() {
+    fun handlePlaybackEnded(fromStateEnded: Boolean = false) {
         cancelBufferingWatchdog()
         if (isPreparingNewVideo) return
 
         val now = System.currentTimeMillis()
-        if (now - lastPlaybackEndedTimestamp < 1500L) {
+        if (now - lastPlaybackEndedTimestamp < 1000L) {
             return
         }
 
         val controller = mediaController ?: return
         if (controller.currentMediaItem == null) return
 
-        val pos = controller.currentPosition.coerceAtLeast(0L)
-        val dur = controller.duration.coerceAtLeast(0L)
-
-        // Verifikasi ketat: Video BENAR-BENAR selesai jika posisi sudah di detik-detik akhir (minimal 95% atau sisa < 3.5 detik).
-        // JANGAN PERNAH ganti video otomatis jika posisi masih di awal (pos < 5 detik) atau durasi belum terdeteksi!
-        val isReallyEnded = dur > 5_000L && (pos >= dur - 3_500L || (dur > 0 && pos >= (dur * 0.95f).toLong()))
-        if (!isReallyEnded) {
-            return
+        // Jika bukan dari STATE_ENDED (misal dari polling watchdog), lakukan verifikasi posisi
+        if (!fromStateEnded) {
+            val pos = controller.currentPosition.coerceAtLeast(0L)
+            val dur = controller.duration.coerceAtLeast(0L)
+            val isReallyEnded = dur > 5_000L && (pos >= dur - 3_500L || (dur > 0 && pos >= (dur * 0.95f).toLong()))
+            if (!isReallyEnded) {
+                return
+            }
         }
 
         lastPlaybackEndedTimestamp = now
@@ -432,7 +456,9 @@ class PlayerController @Inject constructor(
                 val videos = _queue.value
                 if (videos.isNotEmpty()) {
                     val nextIndex = (_currentIndex.value + 1) % videos.size
-                    playQueue(videos, nextIndex)
+                    playQueue(videos, nextIndex, audioOnly = _isAudioOnly.value)
+                } else if (isAutoplayEnabled.value) {
+                    playAutoplayNext()
                 } else {
                     isTransitioningAutoplay = false
                     mediaController?.seekTo(0)
@@ -441,7 +467,9 @@ class PlayerController @Inject constructor(
             }
             RepeatMode.OFF -> {
                 val videos = _queue.value
-                val nextIndex = _currentIndex.value + 1
+                val currentVideoId = _currentStreamBundle.value?.videoId.orEmpty()
+                val activeIdx = videos.indexOfFirst { it.id == currentVideoId }
+                val nextIndex = if (activeIdx >= 0) activeIdx + 1 else _currentIndex.value + 1
                 if (videos.isNotEmpty() && nextIndex in videos.indices) {
                     playNextInQueue()
                 } else if (isAutoplayEnabled.value) {
@@ -481,9 +509,27 @@ class PlayerController @Inject constructor(
         currentList.add(video)
         _queue.value = currentList
 
+        // Selaraskan PlaylistItem virtual agar UI antrean selalu sinkron dan tidak hilang
+        val existingPl = _currentPlaylist.value
+        _currentPlaylist.value = if (existingPl != null) {
+            existingPl.copy(
+                videos = currentList,
+                streamCount = currentList.size.toLong()
+            )
+        } else {
+            id.katube.data.model.PlaylistItem(
+                id = "KATUBE_QUEUE",
+                url = "https://www.youtube.com/playlist?list=KATUBE_QUEUE",
+                name = "Daftar Antrean",
+                uploaderName = "${currentList.size} video",
+                streamCount = currentList.size.toLong(),
+                videos = currentList
+            )
+        }
+
         // Jika player belum memutar apapun, mulai video ini seketika
         if (currentBundle == null || (currentBundle.selectedVideoUrl.isNullOrEmpty() && mediaController?.currentMediaItem == null)) {
-            prepareForNewVideo(video.id, previewItem = video)
+            playInBackground(video.id, preview = video)
         }
     }
 
@@ -513,16 +559,41 @@ class PlayerController @Inject constructor(
         currentList.add(insertIndex, video)
         _queue.value = currentList
 
+        // Selaraskan PlaylistItem virtual
+        val existingPl = _currentPlaylist.value
+        _currentPlaylist.value = if (existingPl != null) {
+            existingPl.copy(
+                videos = currentList,
+                streamCount = currentList.size.toLong()
+            )
+        } else {
+            id.katube.data.model.PlaylistItem(
+                id = "KATUBE_QUEUE",
+                url = "https://www.youtube.com/playlist?list=KATUBE_QUEUE",
+                name = "Daftar Antrean",
+                uploaderName = "${currentList.size} video",
+                streamCount = currentList.size.toLong(),
+                videos = currentList
+            )
+        }
+
         if (currentBundle == null || (currentBundle.selectedVideoUrl.isNullOrEmpty() && mediaController?.currentMediaItem == null)) {
-            prepareForNewVideo(video.id, previewItem = video)
+            playInBackground(video.id, preview = video)
         }
     }
 
-    fun playInBackground(videoId: String) {
+    fun playInBackground(videoId: String, preview: id.katube.data.model.VideoItem? = null) {
+        if (preview != null) {
+            pendingPreviewItem = preview
+            _isMiniPlayerVisible.value = true
+            isPreparingNewVideo = true
+        }
         scope.launch {
             val maxHeight = getEffectiveMaxHeight()
             repository.getStreamInfo(videoId, maxHeight = maxHeight).onSuccess { bundle ->
                 playVideo(bundle, audioOnly = true)
+            }.onFailure {
+                isPreparingNewVideo = false
             }
         }
     }
@@ -533,9 +604,13 @@ class PlayerController @Inject constructor(
     }
 
     fun setPlaylistQueue(playlist: id.katube.data.model.PlaylistItem, startIndex: Int = 0) {
-        _currentPlaylist.value = playlist
-        _queue.value = playlist.videos
-        _currentIndex.value = startIndex.coerceIn(0, (playlist.videos.size - 1).coerceAtLeast(0))
+        val cleanVideos = playlist.videos
+            .filter { it.id.length == 11 && !it.id.startsWith("RD") && !it.isMix }
+            .map { it.copy(isMix = false, playlistId = null) }
+        val cleanPlaylist = playlist.copy(videos = cleanVideos)
+        _currentPlaylist.value = cleanPlaylist
+        _queue.value = cleanVideos
+        _currentIndex.value = startIndex.coerceIn(0, (cleanVideos.size - 1).coerceAtLeast(0))
         _isShuffleEnabled.value = false
     }
 
@@ -614,16 +689,29 @@ class PlayerController @Inject constructor(
         }
     }
 
-    fun playQueue(videos: List<id.katube.data.model.VideoItem>, startIndex: Int = 0) {
+    fun playQueue(videos: List<id.katube.data.model.VideoItem>, startIndex: Int = 0, audioOnly: Boolean = _isAudioOnly.value) {
         setQueue(videos, startIndex)
         if (videos.isNotEmpty() && startIndex in videos.indices) {
             val video = videos[startIndex]
+            isTransitioningAutoplay = true
+            acquireWakeLocks(3 * 60 * 1000L)
+            val cached = streamBundleCache[video.id]
+            if (cached != null) {
+                playVideo(cached, audioOnly = audioOnly)
+                return
+            }
             scope.launch {
                 val maxHeight = getEffectiveMaxHeight()
                 setIsAutoQuality(maxHeight <= 0)
-                repository.getStreamInfo(video.id, maxHeight = maxHeight).onSuccess { bundle ->
-                    playVideo(bundle)
-                }
+                repository.getStreamInfo(video.id, maxHeight = maxHeight).fold(
+                    onSuccess = { bundle ->
+                        playVideo(bundle, audioOnly = audioOnly)
+                    },
+                    onFailure = {
+                        isTransitioningAutoplay = false
+                        playNextInQueue()
+                    }
+                )
             }
         }
     }
@@ -641,18 +729,40 @@ class PlayerController @Inject constructor(
 
     fun playNextInQueue() {
         val videos = _queue.value
-        val nextIndex = _currentIndex.value + 1
+        val currentVideoId = _currentStreamBundle.value?.videoId.orEmpty()
+        val activeIdx = videos.indexOfFirst { it.id == currentVideoId }
+        val nextIndex = if (activeIdx >= 0) activeIdx + 1 else _currentIndex.value + 1
         if (videos.isNotEmpty() && nextIndex in videos.indices) {
+            isTransitioningAutoplay = true
+            acquireWakeLocks(3 * 60 * 1000L)
             _currentIndex.value = nextIndex
             val nextVideo = videos[nextIndex]
-            acquireWakeLocks()
 
-            // Segera pasang judul & artis baru di lock screen & bilah status agar tidak tertinggal judul lagu lama!
+            // 1. Segera tetapkan StreamBundle preview seketika (0 ms) agar bilah notifikasi & UI sinkron dengan lagu berikutnya
+            _currentStreamBundle.value = StreamBundle(
+                videoId = nextVideo.id,
+                title = nextVideo.title,
+                uploaderName = nextVideo.uploaderName,
+                uploaderAvatarUrl = nextVideo.uploaderAvatarUrl,
+                thumbnailUrl = nextVideo.thumbnailUrl,
+                durationSeconds = nextVideo.durationSeconds,
+                viewCount = nextVideo.viewCount,
+                uploadDateText = nextVideo.uploadDateText,
+                isLive = nextVideo.isLive,
+                selectedVideoUrl = null,
+                selectedAudioUrl = "",
+                selectedHeight = 0,
+                relatedVideos = emptyList()
+            )
+            _isMiniPlayerVisible.value = true
+
+            // 2. Segera pasang judul, artis, & cover baru di lock screen & bilah status agar tidak tertinggal judul lagu lama!
             val pendingMetadata = MediaMetadata.Builder()
                 .setTitle(nextVideo.title)
                 .setArtist(nextVideo.uploaderName)
                 .setDisplayTitle(nextVideo.title)
                 .setSubtitle(nextVideo.uploaderName)
+                .setArtworkUri(nextVideo.thumbnailUrl?.let { Uri.parse(it) })
                 .build()
             mediaController?.setPlaylistMetadata(pendingMetadata)
 
@@ -692,14 +802,43 @@ class PlayerController @Inject constructor(
         acquireWakeLocks(3 * 60 * 1000L)
         isTransitioningAutoplay = true
 
+        val currentBefore = _currentStreamBundle.value
+        val currentVideoId = currentBefore?.videoId.orEmpty()
+        // Catat video saat ini ke riwayat pemutaran agar MUTLAK tidak pernah diputar ulang oleh putar otomatis!
+        if (currentVideoId.isNotEmpty()) {
+            recordHistory(currentVideoId)
+        }
+
+        // Simpan daftar video terkait saat ini sebelum transisi
+        val existingRelated = currentBefore?.relatedVideos.orEmpty()
+
         val best = pickBestNextAutoplayCandidate()
-        if (best != null && isValidVideoId(best.id)) {
-            // Langsung perbarui judul & artis di lock screen & status bar dengan kandidat autoplay teratas
+        if (best != null && isValidVideoId(best.id) && best.id != currentVideoId) {
+            // 1. Segera tetapkan StreamBundle preview seketika (0 ms) agar bilah notifikasi & UI sinkron dengan lagu berikutnya
+            _currentStreamBundle.value = StreamBundle(
+                videoId = best.id,
+                title = best.title,
+                uploaderName = best.uploaderName,
+                uploaderAvatarUrl = best.uploaderAvatarUrl,
+                thumbnailUrl = best.thumbnailUrl,
+                durationSeconds = best.durationSeconds,
+                viewCount = best.viewCount,
+                uploadDateText = best.uploadDateText,
+                isLive = best.isLive,
+                selectedVideoUrl = null,
+                selectedAudioUrl = "",
+                selectedHeight = 0,
+                relatedVideos = existingRelated.filter { it.id != best.id }
+            )
+            _isMiniPlayerVisible.value = true
+
+            // 2. Langsung perbarui judul, artis, & cover di lock screen & status bar dengan kandidat autoplay teratas
             val pendingMetadata = MediaMetadata.Builder()
                 .setTitle(best.title)
                 .setArtist(best.uploaderName)
                 .setDisplayTitle(best.title)
                 .setSubtitle(best.uploaderName)
+                .setArtworkUri(best.thumbnailUrl?.let { Uri.parse(it) })
                 .build()
             mediaController?.setPlaylistMetadata(pendingMetadata)
 
@@ -715,22 +854,31 @@ class PlayerController @Inject constructor(
                 val maxHeight = getEffectiveMaxHeight()
                 setIsAutoQuality(maxHeight <= 0)
 
-                val current = _currentStreamBundle.value
                 val candidateList = mutableListOf<String>()
-                if (best != null && isValidVideoId(best.id)) {
+                if (best != null && isValidVideoId(best.id) && best.id != currentVideoId) {
                     candidateList.add(best.id)
                 }
 
-                // Tambahkan kandidat cadangan dari related videos
-                current?.relatedVideos?.forEach { rel ->
-                    if (isValidVideoId(rel.id) && !candidateList.contains(rel.id) && !_playbackHistory.contains(rel.id)) {
+                // Tambahkan kandidat cadangan dari daftar rekomendasi video saat ini
+                existingRelated.forEach { rel ->
+                    if (isValidVideoId(rel.id) && rel.id != currentVideoId && !candidateList.contains(rel.id) && !_playbackHistory.contains(rel.id)) {
                         candidateList.add(rel.id)
+                    }
+                }
+
+                // Jika kandidat masih kosong, ambil langsung rekomendasi via YouTube InnerTube
+                if (candidateList.isEmpty() && currentVideoId.isNotEmpty()) {
+                    val nextData = syncRepository.fetchWatchNextRelated(currentVideoId).getOrNull()
+                    nextData?.relatedVideos?.forEach { rel ->
+                        if (isValidVideoId(rel.id) && rel.id != currentVideoId && !candidateList.contains(rel.id) && !_playbackHistory.contains(rel.id)) {
+                            candidateList.add(rel.id)
+                        }
                     }
                 }
 
                 var playedSuccessfully = false
                 // Coba putar kandidat yang tersedia secara berurutan hingga berhasil
-                for (targetId in candidateList.take(4)) {
+                for (targetId in candidateList.take(5)) {
                     val cached = streamBundleCache[targetId]
                     if (cached != null) {
                         playVideo(cached, audioOnly = _isAudioOnly.value, addToHistory = true)
@@ -749,19 +897,24 @@ class PlayerController @Inject constructor(
                     }
                 }
 
-                // Jika semua kandidat related gagal, cari video terbaru berdasarkan artis/judul
+                // Jika semua kandidat related gagal, cari lagu lain dari artis yang sama (JANGAN PERNAH CARI JUDUL LAGU SAMA!)
                 if (!playedSuccessfully) {
                     val query = when {
-                        !activeArtistKeyword.isNullOrBlank() -> "${activeArtistKeyword} lagu terbaru"
-                        !current?.uploaderName.isNullOrBlank() -> "${current?.uploaderName} lagu terbaru"
-                        !current?.title.isNullOrBlank() -> "${current?.title} lagu terbaru"
-                        else -> "lagu indonesia terbaru"
+                        !currentBefore?.uploaderName.isNullOrBlank() -> currentBefore?.uploaderName.orEmpty()
+                        !currentBefore?.title.isNullOrBlank() -> currentBefore?.title.orEmpty()
+                        else -> ""
+                    }
+                    if (query.isBlank()) {
+                        isTransitioningAutoplay = false
+                        if (mediaController?.isPlaying != true) releaseWakeLocks()
+                        return@launch
                     }
                     val searchResult = repository.search(query)
                     if (searchResult.isSuccess) {
                         val items = searchResult.getOrNull().orEmpty()
-                        val candidatesFromSearch = items.filter { isValidVideoId(it.id) && !_playbackHistory.contains(it.id) }
-                            .ifEmpty { items.filter { isValidVideoId(it.id) } }
+                        // MUTLAK: Jangan pernah masukkan video yang sedang diputar ini (currentVideoId)!
+                        val candidatesFromSearch = items.filter { isValidVideoId(it.id) && it.id != currentVideoId && !_playbackHistory.contains(it.id) }
+                            .ifEmpty { items.filter { isValidVideoId(it.id) && it.id != currentVideoId } }
 
                         for (searchCandidate in candidatesFromSearch.take(3)) {
                             val streamRes = repository.getStreamInfo(searchCandidate.id, maxHeight = maxHeight)
@@ -803,36 +956,8 @@ class PlayerController @Inject constructor(
         if (allCandidates.isEmpty()) return null
 
         val playedHistory = _playbackHistory.toSet()
-        val activeArtist = activeArtistKeyword?.trim()?.lowercase().orEmpty()
 
-        if (activeArtist.length >= 3) {
-            val scored = allCandidates.map { video ->
-                val titleLower = video.title.lowercase()
-                val uploaderLower = video.uploaderName.lowercase()
-                var score = 0
-
-                // 1. Kecocokan Artis (+10.000)
-                val matchesArtist = titleLower.contains(activeArtist) || uploaderLower.contains(activeArtist)
-                if (matchesArtist) {
-                    score += 10_000
-                    if (titleLower.contains(activeArtist)) score += 2_000
-                }
-
-                // 2. Kebaruan Video (Freshness Score +0 sampai +1000)
-                score += calculateFreshnessScore(video.uploadDateText)
-
-                // 3. Penalti jika sudah diputar baru-baru ini (-50.000)
-                if (playedHistory.contains(video.id)) {
-                    score -= 50_000
-                }
-
-                video to score
-            }.sortedByDescending { it.second }
-
-            val bestCandidate = scored.firstOrNull { it.second > -40_000 }?.first
-            if (bestCandidate != null) return bestCandidate
-        }
-
+        // Murni urutan rekomendasi nomor 1 resmi YouTube InnerTube yang belum diputar di sesi ini
         return allCandidates.firstOrNull { !playedHistory.contains(it.id) }
             ?: allCandidates.firstOrNull()
     }
@@ -971,8 +1096,39 @@ class PlayerController @Inject constructor(
         val videos = _queue.value
         val prevIndex = _currentIndex.value - 1
         if (prevIndex in videos.indices) {
+            isTransitioningAutoplay = true
+            acquireWakeLocks(3 * 60 * 1000L)
             _currentIndex.value = prevIndex
             val prevVideo = videos[prevIndex]
+
+            // 1. Segera tetapkan StreamBundle preview seketika (0 ms)
+            _currentStreamBundle.value = StreamBundle(
+                videoId = prevVideo.id,
+                title = prevVideo.title,
+                uploaderName = prevVideo.uploaderName,
+                uploaderAvatarUrl = prevVideo.uploaderAvatarUrl,
+                thumbnailUrl = prevVideo.thumbnailUrl,
+                durationSeconds = prevVideo.durationSeconds,
+                viewCount = prevVideo.viewCount,
+                uploadDateText = prevVideo.uploadDateText,
+                isLive = prevVideo.isLive,
+                selectedVideoUrl = null,
+                selectedAudioUrl = "",
+                selectedHeight = 0,
+                relatedVideos = emptyList()
+            )
+            _isMiniPlayerVisible.value = true
+
+            // 2. Segera pasang judul, artis, & cover di lock screen & status bar
+            val pendingMetadata = MediaMetadata.Builder()
+                .setTitle(prevVideo.title)
+                .setArtist(prevVideo.uploaderName)
+                .setDisplayTitle(prevVideo.title)
+                .setSubtitle(prevVideo.uploaderName)
+                .setArtworkUri(prevVideo.thumbnailUrl?.let { Uri.parse(it) })
+                .build()
+            mediaController?.setPlaylistMetadata(pendingMetadata)
+
             val cached = streamBundleCache[prevVideo.id]
             if (cached != null) {
                 playVideo(cached, audioOnly = _isAudioOnly.value, addToHistory = false)
@@ -1003,7 +1159,14 @@ class PlayerController @Inject constructor(
             scope.async(Dispatchers.IO) {
                 try {
                     val maxHeight = getEffectiveMaxHeight()
-                    val res = repository.getStreamInfo(id, maxHeight = maxHeight)
+                    val resolvedId = if (id.length != 11 && (id.startsWith("RD") || id.startsWith("PL") || id.startsWith("VL"))) {
+                        syncRepository.fetchPlaylistDetails(id).getOrNull()?.videos?.firstOrNull {
+                            it.id.length == 11 && !it.id.startsWith("RD") && !it.title.startsWith("Mix -", ignoreCase = true) && !it.title.startsWith("Mix –", ignoreCase = true)
+                        }?.id ?: id
+                    } else {
+                        id
+                    }
+                    val res = repository.getStreamInfo(resolvedId, maxHeight = maxHeight)
                     res.onSuccess { bundle ->
                         cacheStreamBundle(bundle)
                     }
@@ -1136,20 +1299,28 @@ class PlayerController @Inject constructor(
             syncRepository.recordLocalWatchHistory(playedVideo)
         }
 
-        // Validasi apakah video yang diputar merupakan bagian dari antrean playlist aktif
-        val activePl = _currentPlaylist.value
-        if (activePl != null) {
-            val idx = activePl.videos.indexOfFirst { it.id == targetBundle.videoId }
-            if (idx >= 0) {
-                _currentIndex.value = idx
-            } else {
-                // Video yang diputar bukan bagian dari playlist aktif (misal dari Beranda, Rekomendasi, atau Pencarian).
-                // Bersihkan antrean playlist agar bar antrean tidak muncul di bawah player.
-                clearPlaylistQueue()
+        // Sinkronkan indeks antrean aktif jika video yang diputar ada di antrean
+        val qIdx = _queue.value.indexOfFirst { it.id == targetBundle.videoId }
+        if (qIdx >= 0) {
+            _currentIndex.value = qIdx
+        } else {
+            val pIdx = _currentPlaylist.value?.videos?.indexOfFirst { it.id == targetBundle.videoId } ?: -1
+            if (pIdx >= 0) {
+                _currentIndex.value = pIdx
             }
         }
 
-        _currentStreamBundle.value = targetBundle
+        val mergedRelated = if (targetBundle.relatedVideos.isEmpty() && previousBundle != null && previousBundle.videoId == targetBundle.videoId && previousBundle.relatedVideos.isNotEmpty()) {
+            previousBundle.relatedVideos
+        } else {
+            targetBundle.relatedVideos
+        }
+        val finalBundle = if (mergedRelated.isNotEmpty() && targetBundle.relatedVideos.isEmpty()) {
+            targetBundle.copy(relatedVideos = mergedRelated)
+        } else {
+            targetBundle
+        }
+        _currentStreamBundle.value = finalBundle
         _isAudioOnly.value = effectiveAudioOnly
         _isMiniPlayerVisible.value = true
         pendingSeekPositionMs = startPositionMs
@@ -1239,7 +1410,7 @@ class PlayerController @Inject constructor(
         if (startPositionMs > 0L) {
             controller.setMediaItem(mediaItem, startPositionMs)
         } else {
-            controller.setMediaItem(mediaItem)
+            controller.setMediaItem(mediaItem, /* resetPosition = */ true)
         }
         controller.prepare()
         controller.play()
@@ -1322,6 +1493,20 @@ class PlayerController @Inject constructor(
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
+            }
+        }
+
+        // Prefetch video berikutnya di antrean ATAU rekomendasi autoplay agar transisi (terutama di latar belakang / layar mati) berjalan instan 0 ms
+        val nextIdx = _currentIndex.value + 1
+        val nextVideo = _queue.value.getOrNull(nextIdx) ?: pickBestNextAutoplayCandidate()
+        if (nextVideo != null && isValidVideoId(nextVideo.id) && !streamBundleCache.containsKey(nextVideo.id)) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val maxHeight = getEffectiveMaxHeight()
+                    repository.getStreamInfo(nextVideo.id, maxHeight = maxHeight).onSuccess { nextBundle ->
+                        cacheStreamBundle(nextBundle)
+                    }
+                } catch (_: Exception) {}
             }
         }
     }

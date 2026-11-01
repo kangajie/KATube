@@ -1,9 +1,12 @@
 package id.katube.data.model
 
+import androidx.compose.runtime.Immutable
+
 /**
  * Model domain untuk video YouTube.
  * UI HANYA boleh berinteraksi dengan kelas ini, BUKAN kelas NewPipeExtractor langsung.
  */
+@Immutable
 data class VideoItem(
     val id: String,
     val url: String,
@@ -93,6 +96,7 @@ data class VideoItem(
 /**
  * Model domain untuk Channel.
  */
+@Immutable
 data class ChannelItem(
     val id: String,
     val url: String,
@@ -102,6 +106,7 @@ data class ChannelItem(
     val subscriberCount: Long = 0,
     val description: String? = null,
     val videos: List<VideoItem> = emptyList(),
+    val playlists: List<PlaylistItem> = emptyList(),
 ) {
     val formattedSubscribers: String
         get() {
@@ -118,6 +123,7 @@ data class ChannelItem(
 /**
  * Model domain untuk Playlist.
  */
+@Immutable
 data class PlaylistItem(
     val id: String,
     val url: String,
@@ -131,6 +137,7 @@ data class PlaylistItem(
 /**
  * Opsi kualitas video yang tersedia untuk dipilih pengguna.
  */
+@Immutable
 data class VideoQuality(
     val height: Int,
     val label: String,
@@ -141,6 +148,7 @@ data class VideoQuality(
 /**
  * Item teks / subtitle yang tersedia untuk video.
  */
+@Immutable
 data class SubtitleItem(
     val url: String,
     val languageCode: String,
@@ -156,6 +164,7 @@ data class SubtitleItem(
  * Paket stream yang siap diputar oleh ExoPlayer / Media3.
  * Menggabungkan stream video-only dan audio-only secara terpisah untuk kualitas maksimal.
  */
+@Immutable
 data class StreamBundle(
     val videoId: String,
     val title: String,
@@ -217,6 +226,7 @@ data class StreamBundle(
 /**
  * Model domain untuk Komentar Video YouTube (Sesuai Referensi PDF Halaman 4).
  */
+@Immutable
 data class CommentItem(
     val id: String,
     val authorName: String,
@@ -231,14 +241,15 @@ data class CommentItem(
 
     val displayAuthorName: String
         get() {
-            val trimmed = authorName.trim().trimStart('@')
-            return if (trimmed.isNotEmpty()) "@$trimmed" else "@Pengguna"
+            val clean = authorName.replace("@", "").trim()
+            return if (clean.isNotEmpty()) clean else "Pengguna"
         }
 }
 
 /**
  * Model domain untuk Notifikasi Akun YouTube.
  */
+@Immutable
 data class KATubeNotification(
     val id: String,
     val title: String,

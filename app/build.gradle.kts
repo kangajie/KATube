@@ -22,6 +22,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -59,6 +60,14 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/*.version"
+            excludes += "DebugProbesKt.bin"
+            excludes += "kotlin-tooling-metadata.json"
+            excludes += "**/*.proto"
+            excludes += "core/*.proto.bin"
+            excludes += "**/*.kotlin_builtins"
+            excludes += "org/mozilla/javascript/resources/Messages_zh_CN.properties"
+            excludes += "org/mozilla/javascript/resources/Messages_fr.properties"
         }
     }
 }

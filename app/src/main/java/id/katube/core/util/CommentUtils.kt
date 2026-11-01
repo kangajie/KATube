@@ -98,11 +98,25 @@ object CommentUtils {
     }
 
     /**
-     * Memastikan username/handle hanya memiliki tepat satu awalan '@'.
-     * Menghilangkan kemungkinan double '@@'.
+     * Membersihkan nama penulis komentar agar langsung menampilkan nama bersih tanpa tanda '@'.
      */
     fun formatAuthorHandle(authorName: String?): String {
-        val trimmed = authorName?.trim().orEmpty().trimStart('@')
-        return if (trimmed.isNotEmpty()) "@$trimmed" else "@Pengguna"
+        val clean = authorName?.replace("@", "")?.trim().orEmpty()
+        return if (clean.isNotEmpty()) clean else "Pengguna"
+    }
+
+    /**
+     * Memastikan URL gambar (avatar, thumbnail, banner) memiliki protokol HTTPS yang valid.
+     * Mengubah URL protocol-relative (//yt3.ggpht.com/...) dan HTTP tidak aman menjadi HTTPS,
+     * sehingga Coil ImageLoader di Android selalu berhasil memuat avatar tanpa error uri/cleartext.
+     */
+    fun sanitizeImageUrl(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val cleaned = url.trim().replace("\\u0026", "&").replace("\\/", "/")
+        return when {
+            cleaned.startsWith("//") -> "https:$cleaned"
+            cleaned.startsWith("http://") -> "https://" + cleaned.substringAfter("http://")
+            else -> cleaned
+        }
     }
 }

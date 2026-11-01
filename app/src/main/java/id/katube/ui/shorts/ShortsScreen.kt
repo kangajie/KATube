@@ -1147,9 +1147,12 @@ private fun ShortsCommentRowItem(
             .padding(vertical = 10.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        if (!comment.authorAvatarUrl.isNullOrEmpty()) {
+        val cleanCommentAvatar = remember(comment.authorAvatarUrl) {
+            CommentUtils.sanitizeImageUrl(comment.authorAvatarUrl)
+        }
+        if (!cleanCommentAvatar.isNullOrEmpty()) {
             AsyncImage(
-                model = comment.authorAvatarUrl,
+                model = cleanCommentAvatar,
                 contentDescription = comment.authorName,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier

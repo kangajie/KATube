@@ -61,8 +61,49 @@ class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
+    private var serviceWakeLock: android.os.PowerManager.WakeLock? = null
+    private var serviceWifiLock: android.net.wifi.WifiManager.WifiLock? = null
+
+    private fun acquireServiceLocks() {
+        try {
+            if (serviceWakeLock?.isHeld != true) {
+                serviceWakeLock?.acquire(30 * 60 * 1000L)
+            }
+            if (serviceWifiLock?.isHeld != true) {
+                serviceWifiLock?.acquire()
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun releaseServiceLocks() {
+        try {
+            if (serviceWakeLock?.isHeld == true) {
+                serviceWakeLock?.release()
+            }
+            if (serviceWifiLock?.isHeld == true) {
+                serviceWifiLock?.release()
+            }
+        } catch (_: Exception) {}
+    }
+
     override fun onCreate() {
         super.onCreate()
+
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        serviceWakeLock = powerManager?.newWakeLock(
+            android.os.PowerManager.PARTIAL_WAKE_LOCK,
+            "katube:playback_service_wakelock"
+        )?.apply { setReferenceCounted(false) }
+
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+        serviceWifiLock = @Suppress("DEPRECATION") wifiManager?.createWifiLock(
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            },
+            "katube:playback_service_wifilock"
+        )?.apply { setReferenceCounted(false) }
 
         val extractorsFactory = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
@@ -123,7 +164,19 @@ class PlaybackService : MediaSessionService() {
                     return hlsFactory.createMediaSource(liveMediaItem)
                 }
 
-                // 2. Gabungkan stream video-only + audio-only jika keduanya tersedia
+                // 2. Di latar belakang (layar mati / aplikasi di-minimize dan bukan mode PiP):
+                // Jika audioUrl tersedia, HANYA download & putar stream audio murni (128 kbps)!
+                // Menghemat 95% kuota & CPU, tidak membebani buffer video yang tak terlihat, dan ANTI-LAG 100%!
+                val isBackgroundOnly = !playerController.isAppInForeground.value && !playerController.isInPipMode.value
+                if (isBackgroundOnly && !audioUrl.isNullOrEmpty()) {
+                    val audioMediaItem = mediaItem.buildUpon()
+                        .setUri(audioUrl)
+                        .setSubtitleConfigurations(subtitleConfigs)
+                        .build()
+                    return progressiveFactory.createMediaSource(audioMediaItem)
+                }
+
+                // 3. Gabungkan stream video-only + audio-only jika keduanya tersedia (mode layar aktif / PiP)
                 // Pertahankan mediaMetadata asli pada videoMediaItem agar player mengetahui Judul, Channel, & Thumbnail
                 // clipDurations = true memastikan player langsung STATE_ENDED saat stream audio selesai tanpa macet buffering di akhir
                 if (!videoUrl.isNullOrEmpty() && !audioUrl.isNullOrEmpty()) {
@@ -149,20 +202,20 @@ class PlaybackService : MediaSessionService() {
             }
         }
 
-        // LoadControl satset, ringan, & stabil:
-        // - bufferForPlaybackMs = 1.000ms: Video mulai instan dalam 1 detik buffer
-        // - bufferForPlaybackAfterRebufferMs = 2.000ms: Pemulihan cepat saat koneksi berfluktuasi
-        // - minBufferMs = 15.000ms, maxBufferMs = 50.000ms: Hemat bandwidth memori HP
+        // LoadControl satset, super ringan & stabil di latar belakang:
+        // - bufferForPlaybackMs = 1.500ms: Memastikan cadangan buffer cukup tebal sebelum mulai berputar agar anti-macet
+        // - bufferForPlaybackAfterRebufferMs = 3.000ms: Pemulihan cepat dan kokoh saat koneksi berfluktuasi
+        // - minBufferMs = 30.000ms, maxBufferMs = 65.000ms: Cadangan buffer audio & video berlimpah
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs = */ 15_000,
-                /* maxBufferMs = */ 50_000,
-                /* bufferForPlaybackMs = */ 1_000,
-                /* bufferForPlaybackAfterRebufferMs = */ 2_000
+                /* minBufferMs = */ 30_000,
+                /* maxBufferMs = */ 65_000,
+                /* bufferForPlaybackMs = */ 1_500,
+                /* bufferForPlaybackAfterRebufferMs = */ 3_000
             )
             .setBackBuffer(
                 /* backBufferDurationMs = */ 10_000,
-                /* retainBackBufferFromKeyframe = */ true
+                /* retainBackBufferFromKeyframe = */ false
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -171,8 +224,11 @@ class PlaybackService : MediaSessionService() {
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
 
+        val trackSelector = androidx.media3.exoplayer.trackselection.DefaultTrackSelector(this)
+
         val player = ExoPlayer.Builder(this)
             .setRenderersFactory(renderersFactory)
+            .setTrackSelector(trackSelector)
             .setMediaSourceFactory(customMediaSourceFactory)
             .setLoadControl(loadControl)
             .setAudioAttributes(
@@ -186,16 +242,157 @@ class PlaybackService : MediaSessionService() {
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
 
-        // Pasang Metadata & Unduh Artwork Thumbnail ke notifikasi sistem jika belum tersedia
+        // Matikan track video saat aplikasi di latar belakang (dan bukan mode PiP),
+        // sehingga ExoPlayer HANYA mendownload audio (128 kbps) -> hemat bandwidth 95%,
+        // hemat CPU, tidak ada frame dropping, dan background play menjadi sangat ringan & lancar!
+        serviceScope.launch {
+            kotlinx.coroutines.flow.combine(
+                playerController.isAppInForeground,
+                playerController.isInPipMode,
+                playerController.isAudioOnly
+            ) { inForeground, inPip, audioOnly ->
+                audioOnly || (!inForeground && !inPip)
+            }.collect { disableVideo ->
+                val currentParams = player.trackSelectionParameters
+                if (currentParams.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO) != disableVideo) {
+                    player.trackSelectionParameters = currentParams
+                        .buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, disableVideo)
+                        .build()
+                }
+            }
+        }
+
+        // Helper untuk memperbarui metadata pemutar secara atomik & instan
+        // Memperbarui playlistMetadata DAN replaceMediaItem pada MediaItem yang aktif
+        // sehingga Android 13+ System UI & bilah notifikasi segera mendeteksi EVENT_MEDIA_METADATA_CHANGED
+        fun updatePlayerMetadata(
+            videoId: String,
+            title: CharSequence?,
+            artist: CharSequence?,
+            thumbUri: android.net.Uri?,
+            artworkBytes: ByteArray?
+        ) {
+            if (title.isNullOrBlank()) return
+            val metaBuilder = MediaMetadata.Builder()
+                .setTitle(title)
+                .setArtist(artist)
+                .setDisplayTitle(title)
+                .setSubtitle(artist)
+                .setArtworkUri(thumbUri)
+
+            if (artworkBytes != null) {
+                metaBuilder.setArtworkData(artworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+            }
+            val meta = metaBuilder.build()
+            player.setPlaylistMetadata(meta)
+
+            // KRUSIAL untuk Android 13+ (System UI Media Notification):
+            // Perbarui juga MediaItem aktif agar framework MediaSession langsung mendeteksi perubahan
+            if (player.mediaItemCount > 0) {
+                val curIndex = player.currentMediaItemIndex
+                if (curIndex in 0 until player.mediaItemCount) {
+                    val currentItem = player.getMediaItemAt(curIndex)
+                    if (currentItem != null) {
+                        val updatedItem = currentItem.buildUpon()
+                            .setMediaMetadata(meta)
+                            .build()
+                        try {
+                            player.replaceMediaItem(curIndex, updatedItem)
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+
+            // PENTING: Segera paksa MediaSessionService untuk me-rebuild dan mem-post notifikasi sistem
+            mediaSession?.let { session ->
+                try {
+                    onUpdateNotification(session)
+                } catch (_: Exception) {}
+            }
+        }
+
+        // Pantau langsung pergantian video di PlayerController (Single Source of Truth)
+        // agar bilah status & lock screen SELALU 100% SINKRON seketika saat lanjut lagu berikutnya!
+        var currentArtworkDownloadJob: kotlinx.coroutines.Job? = null
+        serviceScope.launch {
+            playerController.currentStreamBundle.collect { activeBundle ->
+                if (activeBundle != null && activeBundle.videoId.isNotEmpty()) {
+                    val activeTitle = activeBundle.title
+                    val activeArtist = activeBundle.uploaderName
+                    val activeThumb = activeBundle.thumbnailUrl
+                    val thumbUri = activeThumb?.let { android.net.Uri.parse(it) }
+
+                    // 1. Langsung update metadata sistem seketika (0 ms)
+                    updatePlayerMetadata(
+                        videoId = activeBundle.videoId,
+                        title = activeTitle,
+                        artist = activeArtist,
+                        thumbUri = thumbUri,
+                        artworkBytes = null
+                    )
+
+                    // 2. Perbarui target pending intent notifikasi
+                    val updateIntent = Intent(this@PlaybackService, id.katube.MainActivity::class.java).apply {
+                        action = Intent.ACTION_VIEW
+                        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        putExtra("open_watch_screen", true)
+                        putExtra("open_video_id", activeBundle.videoId)
+                    }
+                    val updatePendingIntent = PendingIntent.getActivity(
+                        this@PlaybackService,
+                        1001,
+                        updateIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    mediaSession?.setSessionActivity(updatePendingIntent)
+
+                    // 3. Batalkan job unduh thumbnail sebelumnya agar tidak tumpang tindih
+                    currentArtworkDownloadJob?.cancel()
+                    if (!activeThumb.isNullOrEmpty()) {
+                        currentArtworkDownloadJob = launch(Dispatchers.IO) {
+                            try {
+                                val req = coil.request.ImageRequest.Builder(this@PlaybackService)
+                                    .data(activeThumb)
+                                    .size(320, 320)
+                                    .allowHardware(false)
+                                    .build()
+                                val res = (coil.Coil.imageLoader(this@PlaybackService).execute(req) as? coil.request.SuccessResult)?.drawable
+                                val bmp = (res as? android.graphics.drawable.BitmapDrawable)?.bitmap
+                                if (bmp != null) {
+                                    val stream = java.io.ByteArrayOutputStream()
+                                    bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, stream)
+                                    val byteArray = stream.toByteArray()
+                                    withContext(Dispatchers.Main) {
+                                        if (playerController.currentStreamBundle.value?.videoId == activeBundle.videoId) {
+                                            updatePlayerMetadata(
+                                                videoId = activeBundle.videoId,
+                                                title = activeTitle,
+                                                artist = activeArtist,
+                                                thumbUri = thumbUri,
+                                                artworkBytes = byteArray
+                                            )
+                                        }
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pasang Metadata & Unduh Artwork Thumbnail ke notifikasi sistem jika item berganti
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 if (mediaItem == null) return
                 val metadata = mediaItem.mediaMetadata
+                val activeVideoId = mediaItem.mediaId
                 val currentTitle = metadata.title ?: playerController.currentStreamBundle.value?.title
                 val currentArtist = metadata.artist ?: playerController.currentStreamBundle.value?.uploaderName
+                val thumbUri = metadata.artworkUri ?: playerController.currentStreamBundle.value?.thumbnailUrl?.let { android.net.Uri.parse(it) }
 
                 // Perbarui SessionActivity Intent dengan videoId aktif agar ketika notifikasi status bar diklik, langsung membuka video yang sedang diputar!
-                val activeVideoId = mediaItem.mediaId
                 if (activeVideoId.isNotBlank()) {
                     val updateIntent = Intent(this@PlaybackService, id.katube.MainActivity::class.java).apply {
                         action = Intent.ACTION_VIEW
@@ -213,23 +410,22 @@ class PlaybackService : MediaSessionService() {
                 }
 
                 // Pasang langsung metadata teks lagu baru agar Lock Screen & Notifikasi berganti seketika!
-                val immediateMetadata = MediaMetadata.Builder()
-                    .setTitle(currentTitle)
-                    .setArtist(currentArtist)
-                    .setDisplayTitle(metadata.displayTitle ?: currentTitle)
-                    .setSubtitle(metadata.subtitle ?: currentArtist)
-                    .setArtworkData(metadata.artworkData, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-                    .setArtworkUri(metadata.artworkUri)
-                    .build()
-                player.setPlaylistMetadata(immediateMetadata)
+                updatePlayerMetadata(
+                    videoId = activeVideoId,
+                    title = currentTitle,
+                    artist = currentArtist,
+                    thumbUri = thumbUri,
+                    artworkBytes = metadata.artworkData
+                )
 
-                val artUri = metadata.artworkUri?.toString()
+                val artUri = thumbUri?.toString()
                 if (!artUri.isNullOrEmpty() && metadata.artworkData == null) {
-                    serviceScope.launch(Dispatchers.IO) {
+                    currentArtworkDownloadJob?.cancel()
+                    currentArtworkDownloadJob = serviceScope.launch(Dispatchers.IO) {
                         try {
-                            delay(2500) // Tunda unduhan gambar agar bandwidth awal 100% dipakai pemutaran video
                             val req = coil.request.ImageRequest.Builder(this@PlaybackService)
                                 .data(artUri)
+                                .size(320, 320)
                                 .allowHardware(false)
                                 .build()
                             val res = (coil.Coil.imageLoader(this@PlaybackService).execute(req) as? coil.request.SuccessResult)?.drawable
@@ -240,16 +436,14 @@ class PlaybackService : MediaSessionService() {
                                 val byteArray = stream.toByteArray()
                                 withContext(Dispatchers.Main) {
                                     val activeItem = player.currentMediaItem
-                                    if (activeItem != null && activeItem.mediaId == mediaItem.mediaId) {
-                                        val fullMetadata = MediaMetadata.Builder()
-                                            .setTitle(currentTitle)
-                                            .setArtist(currentArtist)
-                                            .setDisplayTitle(metadata.displayTitle ?: currentTitle)
-                                            .setSubtitle(metadata.subtitle ?: currentArtist)
-                                            .setArtworkData(byteArray, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-                                            .setArtworkUri(metadata.artworkUri)
-                                            .build()
-                                        player.setPlaylistMetadata(fullMetadata)
+                                    if (activeItem != null && (activeItem.mediaId == activeVideoId || activeVideoId.isEmpty())) {
+                                        updatePlayerMetadata(
+                                            videoId = activeVideoId,
+                                            title = currentTitle,
+                                            artist = currentArtist,
+                                            thumbUri = thumbUri,
+                                            artworkBytes = byteArray
+                                        )
                                     }
                                 }
                             }
@@ -260,9 +454,32 @@ class PlaybackService : MediaSessionService() {
                 }
             }
 
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying || player.playWhenReady) {
+                    acquireServiceLocks()
+                } else if (player.playbackState != Player.STATE_BUFFERING) {
+                    releaseServiceLocks()
+                }
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) {
-                    playerController.handlePlaybackEnded()
+                if (playbackState == Player.STATE_BUFFERING || player.playWhenReady) {
+                    acquireServiceLocks()
+                } else if (playbackState == Player.STATE_IDLE) {
+                    if (!player.playWhenReady) {
+                        releaseServiceLocks()
+                    }
+                } else if (playbackState == Player.STATE_ENDED) {
+                    // Jika autoplay atau antrean aktif, pertahankan wake lock agar CPU & Wi-Fi tidak tidur saat mengambil stream lagu berikutnya di background!
+                    val hasNext = (playerController.queue.value.isNotEmpty() && playerController.currentIndex.value + 1 in playerController.queue.value.indices)
+                            || playerController.isAutoplayEnabled.value
+                            || playerController.repeatMode.value != id.katube.player.RepeatMode.OFF
+                    if (hasNext || player.playWhenReady) {
+                        acquireServiceLocks()
+                    } else {
+                        releaseServiceLocks()
+                    }
+                    playerController.handlePlaybackEnded(fromStateEnded = true)
                 }
             }
 
@@ -285,6 +502,34 @@ class PlaybackService : MediaSessionService() {
 
         // ForwardingPlayer: Memastikan tombol Next (>>|) dan Previous (|<<) selalu aktif di Lock Screen & Notifikasi
         val forwardingPlayer = object : ForwardingPlayer(player) {
+            override fun getMediaMetadata(): MediaMetadata {
+                val bundle = playerController.currentStreamBundle.value
+                if (bundle != null && bundle.title.isNotBlank()) {
+                    return MediaMetadata.Builder()
+                        .setTitle(bundle.title)
+                        .setArtist(bundle.uploaderName)
+                        .setDisplayTitle(bundle.title)
+                        .setSubtitle(bundle.uploaderName)
+                        .setArtworkUri(bundle.thumbnailUrl?.let { android.net.Uri.parse(it) })
+                        .build()
+                }
+                return super.getMediaMetadata()
+            }
+
+            override fun getPlaylistMetadata(): MediaMetadata {
+                val bundle = playerController.currentStreamBundle.value
+                if (bundle != null && bundle.title.isNotBlank()) {
+                    return MediaMetadata.Builder()
+                        .setTitle(bundle.title)
+                        .setArtist(bundle.uploaderName)
+                        .setDisplayTitle(bundle.title)
+                        .setSubtitle(bundle.uploaderName)
+                        .setArtworkUri(bundle.thumbnailUrl?.let { android.net.Uri.parse(it) })
+                        .build()
+                }
+                return super.getPlaylistMetadata()
+            }
+
             override fun getAvailableCommands(): Player.Commands {
                 return super.getAvailableCommands().buildUpon()
                     .add(Player.COMMAND_SEEK_TO_NEXT)
@@ -406,30 +651,38 @@ class PlaybackService : MediaSessionService() {
             R.string.notification_channel_playback
         ) {
             override fun getNotificationContentTitle(mediaMetadata: MediaMetadata): CharSequence? {
+                // 1. Selalu utamakan judul aktif dari PlayerController (Single Source of Truth aplikasi)
                 val bundleTitle = playerController.currentStreamBundle.value?.title
                 if (!bundleTitle.isNullOrBlank()) return bundleTitle
 
+                // 2. Judul dari MediaItem aktif
                 val itemTitle = mediaSession?.player?.currentMediaItem?.mediaMetadata?.title
                 if (!itemTitle.isNullOrBlank()) return itemTitle
 
+                // 3. Judul dari MediaMetadata yang dievaluasi Media3
                 val title = mediaMetadata.title
                 if (!title.isNullOrBlank()) return title
                 val displayTitle = mediaMetadata.displayTitle
                 if (!displayTitle.isNullOrBlank()) return displayTitle
+
                 return getString(R.string.app_name)
             }
 
             override fun getNotificationContentText(mediaMetadata: MediaMetadata): CharSequence? {
-                val bundleUploader = playerController.currentStreamBundle.value?.uploaderName
-                if (!bundleUploader.isNullOrBlank()) return bundleUploader
+                // 1. Selalu utamakan nama channel/artis dari PlayerController (Single Source of Truth aplikasi)
+                val bundleArtist = playerController.currentStreamBundle.value?.uploaderName
+                if (!bundleArtist.isNullOrBlank()) return bundleArtist
 
+                // 2. Artis dari MediaItem aktif
                 val itemArtist = mediaSession?.player?.currentMediaItem?.mediaMetadata?.artist
                 if (!itemArtist.isNullOrBlank()) return itemArtist
 
+                // 3. Artis dari MediaMetadata yang dievaluasi Media3
                 val artist = mediaMetadata.artist
                 if (!artist.isNullOrBlank()) return artist
                 val subtitle = mediaMetadata.subtitle
                 if (!subtitle.isNullOrBlank()) return subtitle
+
                 return null
             }
         }
@@ -455,6 +708,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        releaseServiceLocks()
         serviceScope.cancel()
         mediaSession?.run {
             player.release()

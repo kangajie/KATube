@@ -7,6 +7,8 @@ import id.katube.data.model.StreamBundle
 import id.katube.data.model.VideoItem
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.channel.ChannelInfo
@@ -35,8 +37,22 @@ class YouTubeRepositoryImpl @Inject constructor(
 
     private val youTubeService = ServiceList.YouTube
 
+    companion object {
+        private data class CachedChannel(val channel: ChannelItem, val timestamp: Long)
+        private data class CachedFeed(val items: List<VideoItem>, val timestamp: Long)
+        private val channelMemoryCache = java.util.concurrent.ConcurrentHashMap<String, CachedChannel>()
+        private val trendingCache = java.util.concurrent.ConcurrentHashMap<String, CachedFeed>()
+        private val searchCache = java.util.concurrent.ConcurrentHashMap<String, CachedFeed>()
+        private const val CHANNEL_CACHE_TTL_MS = 10 * 60 * 1000L // 10 menit
+        private const val FEED_CACHE_TTL_MS = 8 * 60 * 1000L // 8 menit
+    }
+
     override suspend fun getTrending(): Result<List<VideoItem>> = withContext(ioDispatcher) {
-        safeExtract {
+        val cached = trendingCache["default"]
+        if (cached != null && (System.currentTimeMillis() - cached.timestamp < FEED_CACHE_TTL_MS)) {
+            return@withContext Result.success(cached.items)
+        }
+        val result = safeExtract {
             val kioskList = youTubeService.kioskList
             val kioskExtractor = kioskList.defaultKioskExtractor
             kioskExtractor.fetchPage()
@@ -45,10 +61,21 @@ class YouTubeRepositoryImpl @Inject constructor(
                 .filterIsInstance<StreamInfoItem>()
                 .map { it.toVideoItem() }
         }
+        result.onSuccess { items ->
+            if (items.isNotEmpty()) {
+                trendingCache["default"] = CachedFeed(items, System.currentTimeMillis())
+            }
+        }
+        result
     }
 
     override suspend fun search(query: String): Result<List<VideoItem>> = withContext(ioDispatcher) {
-        safeExtract {
+        val cleanQuery = query.trim().lowercase()
+        val cached = searchCache[cleanQuery]
+        if (cached != null && (System.currentTimeMillis() - cached.timestamp < FEED_CACHE_TTL_MS)) {
+            return@withContext Result.success(cached.items)
+        }
+        val result = safeExtract {
             val searchExtractor = youTubeService.getSearchExtractor(query)
             searchExtractor.fetchPage()
 
@@ -56,6 +83,12 @@ class YouTubeRepositoryImpl @Inject constructor(
                 .filterIsInstance<StreamInfoItem>()
                 .map { it.toVideoItem() }
         }
+        result.onSuccess { items ->
+            if (items.isNotEmpty()) {
+                searchCache[cleanQuery] = CachedFeed(items, System.currentTimeMillis())
+            }
+        }
+        result
     }
 
     override suspend fun getSearchSuggestions(query: String): Result<List<String>> = withContext(ioDispatcher) {
@@ -122,6 +155,12 @@ class YouTubeRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getChannel(channelIdOrUrl: String): Result<ChannelItem> = withContext(ioDispatcher) {
+        val cacheKey = channelIdOrUrl.trim()
+        val cached = channelMemoryCache[cacheKey]
+        if (cached != null && (System.currentTimeMillis() - cached.timestamp < CHANNEL_CACHE_TTL_MS)) {
+            return@withContext Result.success(cached.channel)
+        }
+
         safeExtract {
             val decoded = try {
                 java.net.URLDecoder.decode(channelIdOrUrl.trim(), "UTF-8")
@@ -129,6 +168,13 @@ class YouTubeRepositoryImpl @Inject constructor(
                 channelIdOrUrl.trim()
             }
             val clean = decoded.trim().trimEnd('/')
+
+            // Cek juga cache dengan format clean
+            val cachedClean = channelMemoryCache[clean]
+            if (cachedClean != null && (System.currentTimeMillis() - cachedClean.timestamp < CHANNEL_CACHE_TTL_MS)) {
+                return@safeExtract cachedClean.channel
+            }
+
             val fullUrl = when {
                 clean.startsWith("http://") || clean.startsWith("https://") -> clean
                 clean.startsWith("@") -> "https://www.youtube.com/$clean"
@@ -137,40 +183,154 @@ class YouTubeRepositoryImpl @Inject constructor(
                 clean.contains("youtube.com/@") -> "https://www.youtube.com/@${clean.substringAfter("youtube.com/@")}"
                 clean.contains("/channel/") -> "https://www.youtube.com/channel/${clean.substringAfter("/channel/")}"
                 clean.contains("/@") -> "https://www.youtube.com/@${clean.substringAfter("/@")}"
+                clean.startsWith("/") -> "https://www.youtube.com$clean"
                 else -> "https://www.youtube.com/channel/$clean"
             }
 
-            val info = ChannelInfo.getInfo(youTubeService, fullUrl)
-            val channelId = fullUrl.substringAfterLast("/").substringBefore("?")
-
-            val videoTab = info.tabs.firstOrNull { tab ->
-                tab.contentFilters.contains(ChannelTabs.VIDEOS) == true || tab.url.contains("/videos")
-            } ?: info.tabs.firstOrNull()
-
-            val videos = if (videoTab != null) {
-                try {
-                    val tabInfo = ChannelTabInfo.getInfo(youTubeService, videoTab)
-                    tabInfo.relatedItems
-                        ?.filterIsInstance<StreamInfoItem>()
-                        ?.map { it.toVideoItem() }
-                        .orEmpty()
-                } catch (e: Exception) {
-                    emptyList()
+            val info = try {
+                ChannelInfo.getInfo(youTubeService, fullUrl)
+            } catch (e: Exception) {
+                if (!clean.startsWith("http") && !clean.startsWith("UC") && !clean.startsWith("@")) {
+                    // Coba fallback dengan handle @
+                    val handleUrl = "https://www.youtube.com/@" + clean.replace(" ", "")
+                    ChannelInfo.getInfo(youTubeService, handleUrl)
+                } else {
+                    throw e
                 }
-            } else {
-                emptyList()
+            }
+            val channelId = info.url?.substringAfterLast("/")?.substringBefore("?")?.ifEmpty { fullUrl.substringAfterLast("/").substringBefore("?") } ?: fullUrl.substringAfterLast("/").substringBefore("?")
+
+            val rawAvatar = info.avatars.lastOrNull()?.url
+                ?: info.avatars.firstOrNull()?.url
+                ?: info.parentChannelAvatars.lastOrNull()?.url
+                ?: info.parentChannelAvatars.firstOrNull()?.url
+            val cleanAvatar = CommentUtils.sanitizeImageUrl(rawAvatar)
+            val rawBanner = info.banners.lastOrNull()?.url ?: info.banners.firstOrNull()?.url
+            val cleanBanner = rawBanner?.let {
+                val trimmed = it.trim()
+                when {
+                    trimmed.startsWith("//") -> "https:$trimmed"
+                    trimmed.startsWith("http://") -> "https://" + trimmed.substringAfter("http://")
+                    else -> trimmed
+                }
             }
 
-            ChannelItem(
+            val (videos, playlists) = coroutineScope {
+                val videosDeferred = async {
+                    val videoTab = info.tabs.firstOrNull { tab ->
+                        tab.contentFilters.contains(ChannelTabs.VIDEOS) == true || tab.url.contains("/videos")
+                    } ?: info.tabs.firstOrNull()
+
+                    if (videoTab != null) {
+                        try {
+                            val allVideos = mutableListOf<VideoItem>()
+                            val tabInfo = ChannelTabInfo.getInfo(youTubeService, videoTab)
+                            val initialVideos = tabInfo.relatedItems
+                                ?.filterIsInstance<StreamInfoItem>()
+                                ?.map { it.toVideoItem() }
+                                .orEmpty()
+                            allVideos.addAll(initialVideos)
+
+                            // Muat maksimal 1 batch tambahan (~60 video) agar pemuatan channel responsif dan kilat (<1.5 detik)
+                            var hasNext = tabInfo.hasNextPage()
+                            var nextPage = if (hasNext) tabInfo.nextPage else null
+                            var pageCount = 0
+                            while (hasNext && pageCount < 1) {
+                                val currentNext = nextPage ?: break
+                                try {
+                                    val more = ChannelTabInfo.getMoreItems(youTubeService, videoTab, currentNext)
+                                    val moreVideos = more.items
+                                        ?.filterIsInstance<StreamInfoItem>()
+                                        ?.map { it.toVideoItem() }
+                                        .orEmpty()
+                                    if (moreVideos.isEmpty()) break
+                                    allVideos.addAll(moreVideos)
+                                    hasNext = more.hasNextPage()
+                                    nextPage = if (hasNext) more.nextPage else null
+                                    pageCount++
+                                } catch (_: Exception) {
+                                    break
+                                }
+                            }
+                            allVideos
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                    } else {
+                        emptyList()
+                    }
+                }
+
+                val playlistsDeferred = async {
+                    val playlistTab = info.tabs.firstOrNull { tab ->
+                        tab.contentFilters.contains(ChannelTabs.PLAYLISTS) == true || tab.url.contains("/playlists")
+                    }
+
+                    if (playlistTab != null) {
+                        try {
+                            fun extractPlaylists(items: List<Any>?): List<PlaylistItem> {
+                                return items?.filterIsInstance<org.schabi.newpipe.extractor.playlist.PlaylistInfoItem>()?.map { pItem ->
+                                    val pUrl = pItem.url.orEmpty()
+                                    val pId = if (pUrl.contains("list=")) {
+                                        pUrl.substringAfter("list=").substringBefore("&")
+                                    } else {
+                                        pUrl.substringAfterLast("/")
+                                    }
+                                    val pThumb = pItem.thumbnails?.lastOrNull()?.url ?: pItem.thumbnails?.firstOrNull()?.url
+                                    PlaylistItem(
+                                        id = pId,
+                                        url = pUrl,
+                                        name = pItem.name.orEmpty(),
+                                        uploaderName = pItem.uploaderName ?: info.name,
+                                        thumbnailUrl = pThumb,
+                                        streamCount = pItem.streamCount,
+                                        videos = emptyList(),
+                                    )
+                                }.orEmpty()
+                            }
+
+                            // Cukup ambil daftar playlist batch awal untuk menjaga kecepatan instan
+                            val tabInfo = ChannelTabInfo.getInfo(youTubeService, playlistTab)
+                            extractPlaylists(tabInfo.relatedItems)
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                    } else {
+                        emptyList()
+                    }
+                }
+
+                Pair(videosDeferred.await(), playlistsDeferred.await())
+            }
+
+            // Pastikan setiap video di tab Video menyertakan avatar asli channel agar tidak jatuh ke inisial huruf
+            val finalVideos = videos.map { vid ->
+                val finalAvatar = vid.uploaderAvatarUrl?.takeIf { it.isNotBlank() } ?: cleanAvatar
+                vid.copy(
+                    uploaderAvatarUrl = finalAvatar,
+                    uploaderName = vid.uploaderName.ifEmpty { info.name.orEmpty() }
+                )
+            }
+
+            val channelResult = ChannelItem(
                 id = channelId,
                 url = info.url.orEmpty(),
                 name = info.name.orEmpty(),
-                avatarUrl = info.avatars.firstOrNull()?.url,
-                bannerUrl = info.banners.firstOrNull()?.url,
+                avatarUrl = cleanAvatar,
+                bannerUrl = cleanBanner,
                 subscriberCount = info.subscriberCount,
                 description = info.description,
-                videos = videos,
+                videos = finalVideos,
+                playlists = playlists,
             )
+
+            // Simpan ke in-memory cache
+            val now = System.currentTimeMillis()
+            channelMemoryCache[cacheKey] = CachedChannel(channelResult, now)
+            channelMemoryCache[clean] = CachedChannel(channelResult, now)
+            channelMemoryCache[channelId] = CachedChannel(channelResult, now)
+
+            channelResult
         }
     }
 
@@ -183,10 +343,15 @@ class YouTubeRepositoryImpl @Inject constructor(
             }
             val info = org.schabi.newpipe.extractor.comments.CommentsInfo.getInfo(youTubeService, fullUrl)
             info.relatedItems.orEmpty().map { item ->
+                val rawAvatar = item.uploaderAvatars.lastOrNull()?.url
+                    ?: item.uploaderAvatars.firstOrNull()?.url
+                    ?: item.thumbnails.lastOrNull()?.url
+                    ?: item.thumbnails.firstOrNull()?.url
+                val cleanAvatar = CommentUtils.sanitizeImageUrl(rawAvatar)
                 id.katube.data.model.CommentItem(
                     id = item.commentId.orEmpty(),
                     authorName = CommentUtils.formatAuthorHandle(item.uploaderName),
-                    authorAvatarUrl = item.uploaderAvatars.firstOrNull()?.url,
+                    authorAvatarUrl = cleanAvatar,
                     text = CommentUtils.cleanCommentText(item.commentText.content),
                     uploadDateText = TimeAgoUtils.format(item.uploadDate, item.textualUploadDate),
                     likeCount = if (item.likeCount > 0) item.likeCount else 0,

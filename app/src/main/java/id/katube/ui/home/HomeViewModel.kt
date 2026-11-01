@@ -52,6 +52,7 @@ class HomeViewModel @Inject constructor(
     val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
 
     private val allVideos = mutableListOf<VideoItem>()
+    private val categoryCache = mutableMapOf<String, List<VideoItem>>()
     private var currentPageIndex = 0
     private var isCurrentlyLoadingMore = false
     private var homeContinuationToken: String? = null
@@ -112,7 +113,16 @@ class HomeViewModel @Inject constructor(
     }
 
     private suspend fun loadCategoryInternal(category: String, isRefresh: Boolean = false) {
-        if (!isRefresh) {
+        // Cek in-memory cache kategori: jika ada data dan bukan pull-to-refresh, tampilkan langsung instan 0 ms
+        val cachedCategory = categoryCache[category]
+        if (!isRefresh && !cachedCategory.isNullOrEmpty()) {
+            allVideos.clear()
+            allVideos.addAll(cachedCategory)
+            _uiState.value = HomeUiState.Success(allVideos.toList())
+            return
+        }
+
+        if (!isRefresh && allVideos.isEmpty()) {
             _uiState.value = HomeUiState.Loading
         }
         currentPageIndex = 0
@@ -126,25 +136,46 @@ class HomeViewModel @Inject constructor(
                 return
             }
 
-            // Murni ambil feed rekomendasi beranda personal langsung dari akun YouTube pengguna (FEwhat_to_watch)
-            val syncResult = syncRepository.fetchHomeFeed(account.cookies, continuationToken = null)
-            if (syncResult.isSuccess) {
-                val pair = syncResult.getOrNull()
-                val feedVideos = pair?.first.orEmpty().filter { it.id.isNotEmpty() }
-                homeContinuationToken = pair?.second
+            // Saat refresh, gunakan continuation token yang ada untuk memuat video rekomendasi halaman berikutnya
+            // sehingga tampilan beranda berganti dengan video-video baru (persis seperti YouTube resmi saat ditarik/pull to refresh)
+            val tokenToUse = if (isRefresh && homeContinuationToken != null) homeContinuationToken else null
+            var syncResult = syncRepository.fetchHomeFeed(account.cookies, continuationToken = tokenToUse)
+            var pair = syncResult.getOrNull()
+            var feedVideos = pair?.first.orEmpty().filter { it.id.isNotEmpty() }
 
-                if (feedVideos.isNotEmpty()) {
-                    allVideos.clear()
-                    allVideos.addAll(feedVideos)
-                    _uiState.value = HomeUiState.Success(allVideos.toList())
-                    return
+            // Jika token kelanjutan gagal/kosong, minta feed baru dari YouTube
+            if (feedVideos.isEmpty()) {
+                syncResult = syncRepository.fetchHomeFeed(account.cookies, continuationToken = null)
+                pair = syncResult.getOrNull()
+                feedVideos = pair?.first.orEmpty().filter { it.id.isNotEmpty() }
+            }
+
+            homeContinuationToken = pair?.second
+
+            if (feedVideos.isNotEmpty()) {
+                // Jika saat refresh YouTube mengembalikan sebagian video yang sama, acak urutan atau prioritaskan video segar
+                val finalFeed = if (isRefresh && allVideos.isNotEmpty()) {
+                    val freshVideos = feedVideos.filter { fv -> allVideos.none { it.id == fv.id } }
+                    if (freshVideos.isNotEmpty()) {
+                        freshVideos + feedVideos.filter { fv -> freshVideos.none { it.id == fv.id } }
+                    } else {
+                        feedVideos.shuffled()
+                    }
+                } else {
+                    feedVideos
                 }
+
+                allVideos.clear()
+                allVideos.addAll(finalFeed)
+                categoryCache[category] = allVideos.toList()
+                _uiState.value = HomeUiState.Success(allVideos.toList())
+                return
             } else {
                 // Fallback jika koneksi gagal: tampilkan cache beranda lokal akun jika ada
                 val cached = syncRepository.homeFeed.value
                 if (cached.isNotEmpty()) {
                     allVideos.clear()
-                    allVideos.addAll(cached)
+                    allVideos.addAll(if (isRefresh) cached.shuffled() else cached)
                     _uiState.value = HomeUiState.Success(allVideos.toList())
                     return
                 }
@@ -195,6 +226,7 @@ class HomeViewModel @Inject constructor(
                 if (distinct.isNotEmpty()) {
                     allVideos.clear()
                     allVideos.addAll(distinct)
+                    categoryCache[category] = allVideos.toList()
                     _uiState.value = HomeUiState.Success(allVideos.toList())
                 }
             },

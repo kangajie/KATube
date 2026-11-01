@@ -3,6 +3,7 @@ package id.katube.ui.components
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.background
+import id.katube.core.util.CommentUtils
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -90,8 +91,11 @@ fun VideoCard(
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
+            val optimalThumb = remember(video.thumbnailUrl, video.highResThumbnailUrl) {
+                video.thumbnailUrl ?: video.highResThumbnailUrl
+            }
             AsyncImage(
-                model = video.highResThumbnailUrl ?: video.thumbnailUrl,
+                model = optimalThumb,
                 contentDescription = video.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.matchParentSize(),
@@ -201,9 +205,12 @@ fun VideoCard(
             verticalAlignment = Alignment.Top,
         ) {
             // Avatar Channel 36dp
-            if (!video.uploaderAvatarUrl.isNullOrEmpty()) {
+            val cleanAvatar = remember(video.uploaderAvatarUrl) {
+                CommentUtils.sanitizeImageUrl(video.uploaderAvatarUrl)
+            }
+            if (!cleanAvatar.isNullOrEmpty()) {
                 AsyncImage(
-                    model = video.uploaderAvatarUrl,
+                    model = cleanAvatar,
                     contentDescription = video.uploaderName,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
@@ -262,14 +269,16 @@ fun VideoCard(
                 Spacer(modifier = Modifier.height(2.dp))
 
                 // Metadata: Channel - Views - Waktu
-                val formattedTimeAgo = TimeAgoUtils.format(null, video.uploadDateText)
-                val metadataParts = listOfNotNull(
-                    video.uploaderName.takeIf { it.isNotEmpty() },
-                    video.formattedViews.takeIf { it.isNotEmpty() },
-                    formattedTimeAgo.takeIf { it.isNotEmpty() }
-                )
+                val metaText = remember(video.uploaderName, video.formattedViews, video.uploadDateText) {
+                    val formattedTimeAgo = TimeAgoUtils.format(null, video.uploadDateText)
+                    listOfNotNull(
+                        video.uploaderName.takeIf { it.isNotEmpty() },
+                        video.formattedViews.takeIf { it.isNotEmpty() },
+                        formattedTimeAgo.takeIf { it.isNotEmpty() }
+                    ).joinToString(" • ")
+                }
                 Text(
-                    text = metadataParts.joinToString(" • "),
+                    text = metaText,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -381,7 +390,6 @@ fun VideoCard(
                     onClick = {
                         showBottomSheet = false
                         onAddToPlaylist(video)
-                        Toast.makeText(context, "Disimpan ke Playlist", Toast.LENGTH_SHORT).show()
                     }
                 )
 
@@ -392,7 +400,6 @@ fun VideoCard(
                     onClick = {
                         showBottomSheet = false
                         onAddToWatchLater(video)
-                        Toast.makeText(context, "Disimpan ke Tonton Nanti", Toast.LENGTH_SHORT).show()
                     }
                 )
 
@@ -415,7 +422,7 @@ fun VideoCard(
                         showBottomSheet = false
                         val sendIntent = Intent().apply {
                             action = Intent.ACTION_SEND
-                            putExtra(Intent.EXTRA_TEXT, "https://www.youtube.com/watch?v=${video.id}")
+                            putExtra(Intent.EXTRA_TEXT, "${video.title}\nhttps://www.youtube.com/watch?v=${video.id}")
                             type = "text/plain"
                         }
                         context.startActivity(Intent.createChooser(sendIntent, "Bagikan Video"))
@@ -428,7 +435,8 @@ fun VideoCard(
                     text = "Lapor",
                     onClick = {
                         showBottomSheet = false
-                        Toast.makeText(context, "Laporan terkirim. Terima kasih atas masukan Anda.", Toast.LENGTH_SHORT).show()
+                        onNotInterested(video)
+                        Toast.makeText(context, "Laporan terkirim. Video disembunyikan.", Toast.LENGTH_SHORT).show()
                     }
                 )
             }

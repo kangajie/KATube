@@ -1,5 +1,6 @@
 package id.katube.ui.watch
 
+import android.os.Build
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
@@ -35,6 +36,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -58,11 +62,6 @@ import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.foundation.BorderStroke
-
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.BrightnessHigh
@@ -178,17 +177,6 @@ import id.katube.ui.components.VideoCardSkeleton
 import id.katube.ui.theme.Gold
 import kotlinx.coroutines.delay
 
-
-enum class InPlayerMenuType {
-    NONE,
-    SETTINGS,
-    QUALITY,
-    SPEED,
-    SUBTITLES,
-    SLEEP_TIMER,
-    SEEK_DURATION
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @UnstableApi
 @Composable
@@ -243,13 +231,22 @@ fun WatchScreen(
     val activity = context as? Activity
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val isInPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        activity?.isInPictureInPictureMode == true
+    } else false
     val coroutineScope = rememberCoroutineScope()
+    var targetPlaylistVideo by remember { mutableStateOf<VideoItem?>(null) }
 
     var isPlaylistQueueExpanded by remember { mutableStateOf(false) }
     var showControls by remember { mutableStateOf(true) }
     var isScreenLocked by remember { mutableStateOf(false) }
-    var inPlayerMenu by remember { mutableStateOf(InPlayerMenuType.NONE) }
+    var showPlayerMenuSheet by remember { mutableStateOf(false) }
     var showAddToPlaylistSheet by remember { mutableStateOf(false) }
+    var showQualityMenu by remember { mutableStateOf(false) }
+    var showSpeedMenu by remember { mutableStateOf(false) }
+    var showSeekDurationSheet by remember { mutableStateOf(false) }
+    var showSleepTimerSheet by remember { mutableStateOf(false) }
+    var showSubtitleSheet by remember { mutableStateOf(false) }
     var showRewindRipple by remember { mutableStateOf(false) }
     var showForwardRipple by remember { mutableStateOf(false) }
     val playerDragAnimatable = remember { Animatable(0f) }
@@ -257,21 +254,12 @@ fun WatchScreen(
     // Jika videoId berganti (misal saat notifikasi rekomendasi diklik), otomatis putar video tersebut
     LaunchedEffect(videoId) {
         playerDragAnimatable.snapTo(0f)
-        val activeBundle = playerController.currentStreamBundle.value
-        val hasPlayableMedia = activeBundle != null && (
-            !activeBundle.selectedVideoUrl.isNullOrEmpty() ||
-            activeBundle.selectedAudioUrl.isNotEmpty() ||
-            !activeBundle.hlsUrl.isNullOrEmpty() ||
-            playerController.player != null
-        )
-        if (activeBundle != null && hasPlayableMedia && activeBundle.videoId.isNotEmpty()) {
-            // Pemutar sedang aktif memainkan media!
-            // Mau kembali dari Channel, Playlist, atau manapun: lagu yang saat ini diputar TETAP dimainkan!
-            if (viewModel.getCurrentVideoId() != activeBundle.videoId || viewModel.uiState.value !is WatchUiState.Success) {
-                viewModel.syncWithActivePlayer(activeBundle)
-            }
-        } else if (videoId.isNotBlank() && videoId != "ACTIVE_PLAYER") {
-            if (viewModel.getCurrentVideoId() != videoId || viewModel.uiState.value !is WatchUiState.Success) {
+        if (videoId.isNotBlank() && videoId != "ACTIVE_PLAYER") {
+            val activePlayingId = playerController.currentStreamBundle.value?.videoId
+                ?: playerController.playerState.value?.currentMediaItem?.mediaId
+            if (activePlayingId == videoId && viewModel.uiState.value is WatchUiState.Success) {
+                // Video ini SUDAH sedang aktif diputar oleh PlayerController! Jangan reload ulang dari awal!
+            } else if (viewModel.getCurrentVideoId() != videoId) {
                 val preview = playerController.pendingPreviewItem?.takeIf { it.id == videoId }
                 playerController.pendingPreviewItem = null
                 viewModel.loadVideo(videoId, addToHistory = true, previewItem = preview)
@@ -383,12 +371,21 @@ fun WatchScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .then(
+                if (!isLandscape && !isInPip) {
+                    Modifier
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                } else {
+                    Modifier
+                }
+            )
             .offset { IntOffset(0, playerDragAnimatable.value.coerceAtLeast(0f).roundToInt()) }
-            .alpha(1f - (playerDragAnimatable.value / 1200f).coerceIn(0f, 0.4f))
-            .background(MaterialTheme.colorScheme.background),
+            .alpha(1f - (playerDragAnimatable.value / 1200f).coerceIn(0f, 0.4f)),
     ) {
         // 1. Area Pemutar Video: Adaptif 16:9 di Portrait & Layar Penuh (FillMaxSize) di Lanskap
-        val playerModifier = if (isLandscape) {
+        val playerModifier = if (isLandscape || isInPip) {
             Modifier.fillMaxSize()
         } else {
             Modifier
@@ -911,7 +908,7 @@ fun WatchScreen(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(12.dp))
                                             .background(Color(0x66000000))
-                                            .clickable { inPlayerMenu = InPlayerMenuType.QUALITY }
+                                            .clickable { showQualityMenu = true }
                                             .padding(horizontal = 10.dp, vertical = 4.dp),
                                         contentAlignment = Alignment.Center,
                                     ) {
@@ -929,7 +926,7 @@ fun WatchScreen(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(12.dp))
                                         .background(Color(0x66000000))
-                                        .clickable { inPlayerMenu = InPlayerMenuType.SPEED }
+                                        .clickable { showSpeedMenu = true }
                                         .padding(horizontal = 8.dp, vertical = 4.dp),
                                     contentAlignment = Alignment.Center,
                                 ) {
@@ -942,7 +939,7 @@ fun WatchScreen(
                                 }
 
                                 // Tombol Titik Tiga Pengaturan Player (Buka BottomSheet Sesuai Halaman 3 Referensi)
-                                IconButton(onClick = { inPlayerMenu = InPlayerMenuType.SETTINGS }) {
+                                IconButton(onClick = { showPlayerMenuSheet = true }) {
                                     Icon(
                                         imageVector = Icons.Default.MoreVert,
                                         contentDescription = "Pengaturan Pemutar",
@@ -1131,82 +1128,248 @@ fun WatchScreen(
                 }
             }
 
-            // Menu Pengaturan di Dalam Frame Video (In-Player Menu Overlay)
-            if (inPlayerMenu != InPlayerMenuType.NONE) {
-                val bundle = currentStreamBundle ?: (uiState as? WatchUiState.Success)?.bundle
-                val activeSubLang by playerController.selectedSubtitleLanguage.collectAsState()
-                InPlayerMenuOverlay(
-                    menuType = inPlayerMenu,
-                    onDismiss = { inPlayerMenu = InPlayerMenuType.NONE },
-                    onNavigateMenu = { targetMenu -> inPlayerMenu = targetMenu },
-                    currentStreamBundle = bundle,
-                    isAutoQuality = isAutoQuality,
-                    playbackSpeed = playbackSpeed,
-                    isAutoplayEnabled = isAutoplayEnabled,
-                    repeatMode = repeatMode,
-                    sleepTimerMinutes = sleepTimerMinutes,
-                    seekDuration = seekDuration,
-                    selectedSubtitleLanguage = activeSubLang,
-                    onSelectQuality = { quality ->
-                        viewModel.selectQuality(quality)
-                        inPlayerMenu = InPlayerMenuType.NONE
-                        Toast.makeText(
-                            context,
-                            if (quality.height <= 0) "Kualitas disetel ke Otomatis" else "Kualitas disetel ke ${quality.height}p",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    },
-                    onSelectSpeed = { speed ->
-                        viewModel.setPlaybackSpeed(speed)
-                        inPlayerMenu = InPlayerMenuType.NONE
-                        val label = if (speed == 1.0f) "Normal" else "${speed}x"
-                        Toast.makeText(context, "Kecepatan disetel ke $label", Toast.LENGTH_SHORT).show()
-                    },
-                    onToggleAutoplay = {
-                        viewModel.toggleAutoplay()
-                        Toast.makeText(
-                            context,
-                            if (!isAutoplayEnabled) "Putar otomatis aktif" else "Putar otomatis mati",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    },
-                    onToggleRepeatMode = {
-                        playerController.toggleRepeatMode()
-                    },
-                    onSelectSleepTimer = { minutes ->
-                        if (minutes == 0) {
-                            playerController.cancelSleepTimer()
-                            Toast.makeText(context, "Timer tidur dinonaktifkan", Toast.LENGTH_SHORT).show()
+            // Panel Pemilihan Kualitas Video Langsung di Dalam Video Player (Tidak Turun ke Bawah)
+            if (showQualityMenu) {
+                (currentStreamBundle ?: (uiState as? WatchUiState.Success)?.bundle)?.let { bundle ->
+                    val activeHeight = bundle.selectedHeight
+                    val qualityList = remember(bundle.availableQualities) {
+                        val nonAuto = bundle.availableQualities
+                            .filter { it.height > 0 }
+                            .distinctBy { it.height }
+                            .sortedByDescending { it.height }
+                        if (nonAuto.isNotEmpty()) {
+                            listOf(VideoQuality(height = 0, label = "Otomatis", url = "", isMuxed = false)) + nonAuto
                         } else {
-                            playerController.setSleepTimer(minutes)
-                            Toast.makeText(context, "Timer tidur diatur ke $minutes menit", Toast.LENGTH_SHORT).show()
+                            listOf(
+                                VideoQuality(height = 0, label = "Otomatis", url = "", isMuxed = false),
+                                VideoQuality(height = 1080, label = "1080p", url = "", isMuxed = false),
+                                VideoQuality(height = 720, label = "720p", url = "", isMuxed = false),
+                                VideoQuality(height = 480, label = "480p", url = "", isMuxed = false),
+                                VideoQuality(height = 360, label = "360p", url = "", isMuxed = false),
+                                VideoQuality(height = 240, label = "240p", url = "", isMuxed = false),
+                                VideoQuality(height = 144, label = "144p", url = "", isMuxed = false),
+                            )
                         }
-                        inPlayerMenu = InPlayerMenuType.NONE
-                    },
-                    onSelectSeekDuration = { seconds ->
-                        viewModel.setSeekDuration(seconds)
-                        Toast.makeText(context, "Ketuk dua kali: $seconds detik", Toast.LENGTH_SHORT).show()
-                        inPlayerMenu = InPlayerMenuType.NONE
-                    },
-                    onSelectSubtitle = { langCode ->
-                        playerController.setSubtitleLanguage(langCode)
-                        Toast.makeText(
-                            context,
-                            if (langCode == null || langCode == "OFF") "Teks dimatikan" else "Teks diaktifkan",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                        inPlayerMenu = InPlayerMenuType.NONE
                     }
-                )
+
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .background(Color.Black.copy(alpha = 0.85f))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) { showQualityMenu = false },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                            modifier = Modifier
+                                .widthIn(max = 280.dp)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {},
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 12.dp, horizontal = 12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = "Kualitas Video",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White,
+                                    )
+                                    IconButton(
+                                        onClick = { showQualityMenu = false },
+                                        modifier = Modifier.size(28.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Tutup",
+                                            tint = Color.White.copy(alpha = 0.7f),
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 190.dp)
+                                ) {
+                                    items(qualityList) { q ->
+                                        val isSelected = if (q.height <= 0) {
+                                            isAutoQuality
+                                        } else {
+                                            !isAutoQuality && (activeHeight == q.height || (activeHeight == 0 && q.height == 480))
+                                        }
+                                        val itemLabel = if (q.height <= 0) {
+                                            if (activeHeight > 0) "Otomatis (${activeHeight}p)" else "Otomatis"
+                                        } else {
+                                            "${q.height}p"
+                                        }
+
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    viewModel.selectQuality(q)
+                                                    showQualityMenu = false
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (q.height <= 0) "Kualitas disetel ke Otomatis" else "Kualitas disetel ke ${q.height}p",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            if (isSelected) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    tint = Gold,
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                            } else {
+                                                Spacer(modifier = Modifier.width(26.dp))
+                                            }
+                                            Text(
+                                                text = itemLabel,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (isSelected) Gold else Color.White,
+                                                fontSize = 14.sp,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Panel Pemilihan Kecepatan Pemutaran Langsung di Dalam Video Player
+            if (showSpeedMenu) {
+                val speedList = remember { listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f) }
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(Color.Black.copy(alpha = 0.85f))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { showSpeedMenu = false },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                        modifier = Modifier
+                            .widthIn(max = 260.dp)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {},
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp, horizontal = 12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "Kecepatan Pemutaran",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                )
+                                IconButton(
+                                    onClick = { showSpeedMenu = false },
+                                    modifier = Modifier.size(28.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Tutup",
+                                        tint = Color.White.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 190.dp)
+                            ) {
+                                items(speedList) { sp ->
+                                    val isSelected = (playbackSpeed == sp)
+                                    val label = if (sp == 1.0f) "Normal" else "${sp}x"
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                viewModel.setPlaybackSpeed(sp)
+                                                showSpeedMenu = false
+                                                Toast.makeText(context, "Kecepatan disetel ke $label", Toast.LENGTH_SHORT).show()
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        if (isSelected) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = Gold,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                        } else {
+                                            Spacer(modifier = Modifier.width(26.dp))
+                                        }
+                                        Text(
+                                            text = label,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) Gold else Color.White,
+                                            fontSize = 14.sp,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // 2. Info Video, Komentar, & Daftar Video Terkait (Hanya tampil saat mode Portrait)
-        if (!isLandscape) {
-            // Bar & Antrean Playlist YouTube (Tonton Nanti, Disukai, dan Playlist Akun Pengguna / Antrean Kustom)
+        // 2. Info Video, Komentar, & Daftar Video Terkait (Hanya tampil saat mode Portrait dan bukan PiP)
+        if (!isLandscape && !isInPip) {
+            // Bar & Antrean Playlist YouTube / Antrean Kustom
             val hasQueue = (currentPlaylist != null && queue.isNotEmpty()) || queue.size > 1
             if (hasQueue) {
-                val qName = currentPlaylist?.name ?: "Antrean"
+                val qName = currentPlaylist?.name ?: "Daftar Antrean"
                 val qUploader = currentPlaylist?.uploaderName?.ifBlank { "${queue.size} video" } ?: "${queue.size} video"
                 PlaylistQueueBanner(
                     playlistName = qName,
@@ -1328,7 +1491,20 @@ fun WatchScreen(
                                 }
                             },
                             onAddToPlaylistClick = {
+                                targetPlaylistVideo = null
                                 showAddToPlaylistSheet = true
+                            },
+                            onAddToPlaylistForVideo = { video ->
+                                targetPlaylistVideo = video
+                                showAddToPlaylistSheet = true
+                            },
+                            onAddToWatchLaterForVideo = { video ->
+                                viewModel.addVideoToPlaylist("WL", "Tonton Nanti", targetVideoId = video.id) { _, msg ->
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            onRemoveRelatedVideo = { video ->
+                                viewModel.removeRelatedVideo(video.id)
                             },
                             onLoadMoreRelated = {
                                 viewModel.loadMoreRelatedVideos()
@@ -1364,6 +1540,345 @@ fun WatchScreen(
                                 }
                             },
                         )
+                    }
+                }
+            }
+        }
+    }
+
+    // Modal Bottom Sheet Menu Pengaturan Player (Sesuai Referensi PDF Halaman 3 Kanan)
+    if (showPlayerMenuSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showPlayerMenuSheet = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp),
+            ) {
+                // 1. Kualitas Video
+                (currentStreamBundle ?: (uiState as? WatchUiState.Success)?.bundle)?.let { bundle ->
+                    val activeHeight = bundle.selectedHeight
+                    val qualitySubtitle = if (isAutoQuality) {
+                        "Otomatis (${activeHeight}p)"
+                    } else {
+                        "${activeHeight}p"
+                    }
+                    PlayerMenuItem(
+                        icon = Icons.Default.HighQuality,
+                        title = "Kualitas video",
+                        subtitle = qualitySubtitle,
+                        onClick = {
+                            showPlayerMenuSheet = false
+                            showControls = true
+                            showQualityMenu = true
+                        }
+                    )
+                }
+
+                // 2. Putar Otomatis
+                PlayerMenuItem(
+                    icon = Icons.Default.PlayArrow,
+                    title = "Putar otomatis",
+                    subtitle = if (isAutoplayEnabled) "Menghidupkan" else "Mematikan",
+                    onClick = {
+                        viewModel.toggleAutoplay()
+                        Toast.makeText(context, if (!isAutoplayEnabled) "Putar otomatis aktif" else "Putar otomatis mati", Toast.LENGTH_SHORT).show()
+                    }
+                )
+
+                // 3. Teks / Subtitle
+                val currentSubLang by playerController.selectedSubtitleLanguage.collectAsState()
+                val activeBundle = currentStreamBundle ?: (uiState as? WatchUiState.Success)?.bundle
+                val currentSubTitle = if (currentSubLang == null || currentSubLang == "OFF") {
+                    "Tanpa Teks"
+                } else {
+                    activeBundle?.availableSubtitles?.firstOrNull { it.languageCode.equals(currentSubLang, ignoreCase = true) }?.displayLabel
+                        ?: "Aktif ($currentSubLang)"
+                }
+
+                PlayerMenuItem(
+                    icon = Icons.Default.Subtitles,
+                    title = "Teks",
+                    subtitle = currentSubTitle,
+                    onClick = {
+                        showPlayerMenuSheet = false
+                        showSubtitleSheet = true
+                    }
+                )
+
+                // 4. Ulangi (Loop / Repeat)
+                PlayerMenuItem(
+                    icon = if (repeatMode == RepeatMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                    title = "Ulangi",
+                    subtitle = when (repeatMode) {
+                        RepeatMode.OFF -> "Mematikan"
+                        RepeatMode.ONE -> "Ulangi Satu"
+                        RepeatMode.ALL -> "Ulangi Semua"
+                    },
+                    onClick = {
+                        playerController.toggleRepeatMode()
+                    }
+                )
+
+                // 5. Alat Penghitung Waktu (Sleep Timer)
+                PlayerMenuItem(
+                    icon = Icons.Default.Timer,
+                    title = "Alat penghitung waktu",
+                    subtitle = if (sleepTimerMinutes != null) "$sleepTimerMinutes menit tersisa" else "Nonaktif",
+                    onClick = {
+                        showPlayerMenuSheet = false
+                        showSleepTimerSheet = true
+                    }
+                )
+
+                // 6. Ketuk dua kali untuk melompat
+                PlayerMenuItem(
+                    icon = Icons.Default.FastForward,
+                    title = "Ketuk dua kali untuk melompat",
+                    subtitle = "$seekDuration detik",
+                    onClick = {
+                        showPlayerMenuSheet = false
+                        showSeekDurationSheet = true
+                    }
+                )
+            }
+        }
+    }
+
+
+
+    // Bottom Sheet: Pilihan Durasi Ketuk Dua Kali (Seek Duration)
+    if (showSeekDurationSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSeekDurationSheet = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp),
+            ) {
+                Text(
+                    text = "Ketuk dua kali untuk melompat",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                )
+                val seekOptions = listOf(5, 10, 15, 20, 30, 60)
+                seekOptions.forEach { seconds ->
+                    val isSelected = seekDuration == seconds
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                viewModel.setSeekDuration(seconds)
+                                showSeekDurationSheet = false
+                                Toast.makeText(context, "Ketuk dua kali: $seconds detik", Toast.LENGTH_SHORT).show()
+                            }
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = "$seconds detik" + if (seconds == 10) " (Standar)" else "",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (isSelected) Gold else MaterialTheme.colorScheme.onSurface,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        )
+                        if (isSelected) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Terpilih",
+                                tint = Gold,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Bottom Sheet: Pilihan Pengatur Waktu Tidur (Sleep Timer) Mulai dari 15 Menit dan Kelipatannya
+    if (showSleepTimerSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSleepTimerSheet = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp),
+            ) {
+                Text(
+                    text = "Alat penghitung waktu",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                )
+                // Opsi mulai dari 15 menit dan kelipatannya
+                val timerOptions = listOf(
+                    0 to "Nonaktif (Matikan pengatur waktu)",
+                    15 to "15 Menit",
+                    30 to "30 Menit",
+                    45 to "45 Menit",
+                    60 to "60 Menit (1 Jam)",
+                    75 to "75 Menit (1 Jam 15 Menit)",
+                    90 to "90 Menit (1,5 Jam)",
+                    120 to "120 Menit (2 Jam)",
+                )
+                timerOptions.forEach { (minutes, label) ->
+                    val isSelected = if (minutes == 0) {
+                        sleepTimerMinutes == null
+                    } else {
+                        sleepTimerMinutes != null && sleepTimerMinutes!! > (minutes - 15) && sleepTimerMinutes!! <= minutes
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                if (minutes == 0) {
+                                    playerController.cancelSleepTimer()
+                                    Toast.makeText(context, "Timer tidur dinonaktifkan", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    playerController.setSleepTimer(minutes)
+                                    Toast.makeText(context, "Timer tidur diatur ke $minutes menit", Toast.LENGTH_SHORT).show()
+                                }
+                                showSleepTimerSheet = false
+                            }
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (isSelected) Gold else MaterialTheme.colorScheme.onSurface,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        )
+                        if (isSelected) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Terpilih",
+                                tint = Gold,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Bottom Sheet: Pilihan Teks / Subtitle
+    if (showSubtitleSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSubtitleSheet = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp),
+            ) {
+                Text(
+                    text = "Teks (Subtitle)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                )
+
+                val selectedSub by playerController.selectedSubtitleLanguage.collectAsState()
+                val activeBundle = currentStreamBundle ?: (uiState as? WatchUiState.Success)?.bundle
+                val availableSubs = activeBundle?.availableSubtitles.orEmpty()
+
+                // Opsi: Nonaktif / Tanpa Teks
+                val isOffSelected = selectedSub == null || selectedSub == "OFF"
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            playerController.setSubtitleLanguage("OFF")
+                            showSubtitleSheet = false
+                            Toast.makeText(context, "Teks dimatikan", Toast.LENGTH_SHORT).show()
+                        }
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = "Nonaktif (Tanpa Teks)",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (isOffSelected) Gold else MaterialTheme.colorScheme.onSurface,
+                        fontWeight = if (isOffSelected) FontWeight.Bold else FontWeight.Normal,
+                    )
+                    if (isOffSelected) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = "Terpilih",
+                            tint = Gold,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.padding(vertical = 4.dp),
+                )
+
+                if (availableSubs.isEmpty()) {
+                    Text(
+                        text = "Tidak ada subtitle yang tersedia untuk video ini",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 350.dp)
+                    ) {
+                        items(availableSubs) { sub ->
+                            val isSelected = selectedSub != null && selectedSub != "OFF" && selectedSub.equals(sub.languageCode, ignoreCase = true)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        playerController.setSubtitleLanguage(sub.languageCode)
+                                        showSubtitleSheet = false
+                                        Toast.makeText(context, "Teks: ${sub.displayLabel}", Toast.LENGTH_SHORT).show()
+                                    }
+                                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(
+                                    text = sub.displayLabel,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = if (isSelected) Gold else MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                )
+                                if (isSelected) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = "Terpilih",
+                                        tint = Gold,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1406,12 +1921,13 @@ fun WatchScreen(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
+                val effectiveTargetId = targetPlaylistVideo?.id ?: videoId
                 // 1. Tonton Nanti (Watch Later "WL")
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            viewModel.addVideoToPlaylist("WL", "Tonton Nanti") { _, msg ->
+                            viewModel.addVideoToPlaylist("WL", "Tonton Nanti", targetVideoId = effectiveTargetId) { _, msg ->
                                 Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                             }
                             showAddToPlaylistSheet = false
@@ -1456,7 +1972,7 @@ fun WatchScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        viewModel.addVideoToPlaylist(pl.id, pl.name) { _, msg ->
+                                        viewModel.addVideoToPlaylist(pl.id, pl.name, targetVideoId = effectiveTargetId) { _, msg ->
                                             Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                         }
                                         showAddToPlaylistSheet = false
@@ -1557,6 +2073,9 @@ private fun WatchContent(
     onDislikeClick: () -> Unit,
     onSubscribeClick: () -> Unit,
     onAddToPlaylistClick: () -> Unit,
+    onAddToPlaylistForVideo: (VideoItem) -> Unit = {},
+    onAddToWatchLaterForVideo: (VideoItem) -> Unit = {},
+    onRemoveRelatedVideo: (VideoItem) -> Unit = {},
     onLoadMoreRelated: () -> Unit,
     onToggleAudioOnly: () -> Unit,
     onToggleAutoplay: () -> Unit,
@@ -1863,7 +2382,10 @@ private fun WatchContent(
                         },
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    val effectiveAvatarUrl = channelAvatarUrl ?: bundle.uploaderAvatarUrl
+                    val rawChannelAvatar = channelAvatarUrl?.takeIf { it.isNotBlank() } ?: bundle.uploaderAvatarUrl
+                    val effectiveAvatarUrl = remember(rawChannelAvatar) {
+                        CommentUtils.sanitizeImageUrl(rawChannelAvatar)
+                    }
                     if (!effectiveAvatarUrl.isNullOrEmpty()) {
                         AsyncImage(
                             model = effectiveAvatarUrl,
@@ -1991,9 +2513,12 @@ private fun WatchContent(
                             verticalAlignment = Alignment.Top,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            if (!topComment.authorAvatarUrl.isNullOrEmpty()) {
+                            val cleanTopAvatar = remember(topComment.authorAvatarUrl) {
+                                CommentUtils.sanitizeImageUrl(topComment.authorAvatarUrl)
+                            }
+                            if (!cleanTopAvatar.isNullOrEmpty()) {
                                 AsyncImage(
-                                    model = topComment.authorAvatarUrl,
+                                    model = cleanTopAvatar,
                                     contentDescription = topComment.authorName,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier
@@ -2040,22 +2565,25 @@ private fun WatchContent(
                     } else if (commentTeaser != null) {
                         val (teaserText, teaserAvatar) = commentTeaser
                         Row(
-                            verticalAlignment = Alignment.Top,
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            if (!teaserAvatar.isNullOrEmpty()) {
+                            val cleanTeaserAvatar = remember(teaserAvatar) {
+                                CommentUtils.sanitizeImageUrl(teaserAvatar)
+                            }
+                            if (!cleanTeaserAvatar.isNullOrEmpty()) {
                                 AsyncImage(
-                                    model = teaserAvatar,
+                                    model = cleanTeaserAvatar,
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier
-                                        .size(28.dp)
+                                        .size(24.dp)
                                         .clip(CircleShape),
                                 )
                             } else {
                                 Box(
                                     modifier = Modifier
-                                        .size(28.dp)
+                                        .size(24.dp)
                                         .clip(CircleShape)
                                         .background(MaterialTheme.colorScheme.surfaceVariant),
                                     contentAlignment = Alignment.Center,
@@ -2064,11 +2592,11 @@ private fun WatchContent(
                                         imageVector = Icons.Default.AccountCircle,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(22.dp),
+                                        modifier = Modifier.size(20.dp),
                                     )
                                 }
                             }
-                            Spacer(modifier = Modifier.width(10.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = CommentUtils.cleanCommentText(teaserText).ifBlank { "Lihat komentar..." },
                                 style = MaterialTheme.typography.bodySmall,
@@ -2165,6 +2693,15 @@ private fun WatchContent(
                         onRelatedVideoClick(relatedVideo)
                         (context as? MainActivity)?.enterPipMode()
                     },
+                    onAddToPlaylist = {
+                        onAddToPlaylistForVideo(relatedVideo)
+                    },
+                    onAddToWatchLater = {
+                        onAddToWatchLaterForVideo(relatedVideo)
+                    },
+                    onNotInterested = {
+                        onRemoveRelatedVideo(relatedVideo)
+                    },
                 )
             }
         }
@@ -2184,6 +2721,10 @@ private fun WatchContent(
                     )
                 }
             }
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 
@@ -2312,17 +2853,21 @@ private fun WatchContent(
                     }
                 }
 
+                // Bar Input Komentar Bawah: "Tulis komentar publik..."
                 // Bar Input Komentar Bawah: Avatar Pengguna + "Tulis komentar publik..." + Tombol Kirim
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .imePadding()
                         .padding(vertical = 10.dp)
                         .clip(RoundedCornerShape(24.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    val avatarUrl = userAccount?.avatarUrl
+                    val avatarUrl = remember(userAccount?.avatarUrl) {
+                        CommentUtils.sanitizeImageUrl(userAccount?.avatarUrl)
+                    }
                     if (!avatarUrl.isNullOrEmpty()) {
                         AsyncImage(
                             model = avatarUrl,
@@ -2408,9 +2953,12 @@ private fun CommentRowItem(
             .padding(vertical = 10.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        if (!comment.authorAvatarUrl.isNullOrEmpty()) {
+        val cleanCommentAvatar = remember(comment.authorAvatarUrl) {
+            CommentUtils.sanitizeImageUrl(comment.authorAvatarUrl)
+        }
+        if (!cleanCommentAvatar.isNullOrEmpty()) {
             AsyncImage(
-                model = comment.authorAvatarUrl,
+                model = cleanCommentAvatar,
                 contentDescription = comment.authorName,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -3114,485 +3662,3 @@ private fun YouTubePlayerSeekBar(
     }
 }
 
-
-
-@Composable
-private fun androidx.compose.foundation.layout.BoxScope.InPlayerMenuOverlay(
-    menuType: InPlayerMenuType,
-    onDismiss: () -> Unit,
-    onNavigateMenu: (InPlayerMenuType) -> Unit,
-    currentStreamBundle: StreamBundle?,
-    isAutoQuality: Boolean,
-    playbackSpeed: Float,
-    isAutoplayEnabled: Boolean,
-    repeatMode: RepeatMode,
-    sleepTimerMinutes: Int?,
-    seekDuration: Int,
-    selectedSubtitleLanguage: String?,
-    onSelectQuality: (VideoQuality) -> Unit,
-    onSelectSpeed: (Float) -> Unit,
-    onToggleAutoplay: () -> Unit,
-    onToggleRepeatMode: () -> Unit,
-    onSelectSleepTimer: (Int) -> Unit,
-    onSelectSeekDuration: (Int) -> Unit,
-    onSelectSubtitle: (String?) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier = modifier
-            .matchParentSize()
-            .background(Color.Black.copy(alpha = 0.75f))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) { onDismiss() },
-        contentAlignment = Alignment.Center,
-    ) {
-        Card(
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xF2181818)),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-            modifier = Modifier
-                .fillMaxWidth(0.90f)
-                .widthIn(max = 350.dp)
-                .fillMaxHeight(0.92f)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) { /* intercept click agar tidak dismiss */ },
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(vertical = 6.dp, horizontal = 10.dp)
-            ) {
-                // Header Bar Compact
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp)
-                        .padding(horizontal = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (menuType == InPlayerMenuType.SETTINGS) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Settings,
-                                contentDescription = null,
-                                tint = Gold,
-                                modifier = Modifier.size(17.dp),
-                            )
-                            Spacer(modifier = Modifier.width(7.dp))
-                            Text(
-                                text = "Pengaturan",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                            )
-                        }
-                    } else {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(
-                                onClick = { onNavigateMenu(InPlayerMenuType.SETTINGS) },
-                                modifier = Modifier.size(28.dp),
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Kembali",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(17.dp),
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(4.dp))
-                            val titleText = when (menuType) {
-                                InPlayerMenuType.QUALITY -> "Kualitas Video"
-                                InPlayerMenuType.SPEED -> "Kecepatan Pemutaran"
-                                InPlayerMenuType.SUBTITLES -> "Teks (Subtitle)"
-                                InPlayerMenuType.SLEEP_TIMER -> "Timer Tidur"
-                                InPlayerMenuType.SEEK_DURATION -> "Ketuk Lompat Detik"
-                                else -> ""
-                            }
-                            Text(
-                                text = titleText,
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                            )
-                        }
-                    }
-
-                    IconButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.size(28.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Tutup",
-                            tint = Color.White.copy(alpha = 0.7f),
-                            modifier = Modifier.size(17.dp),
-                        )
-                    }
-                }
-
-                HorizontalDivider(
-                    color = Color.White.copy(alpha = 0.12f),
-                    thickness = 0.7.dp,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-
-                // Body Menu Sesuai menuType
-                when (menuType) {
-                    InPlayerMenuType.SETTINGS -> {
-                        val activeHeight = currentStreamBundle?.selectedHeight ?: 0
-                        val qualityLabel = if (isAutoQuality) {
-                            if (activeHeight > 0) "Otomatis (${activeHeight}p)" else "Otomatis"
-                        } else {
-                            if (activeHeight > 0) "${activeHeight}p" else "Otomatis"
-                        }
-                        val speedLabel = if (playbackSpeed == 1.0f) "Normal" else "${playbackSpeed}x"
-                        val subLabel = if (selectedSubtitleLanguage.isNullOrEmpty() || selectedSubtitleLanguage == "OFF") {
-                            "Nonaktif"
-                        } else {
-                            currentStreamBundle?.availableSubtitles
-                                ?.firstOrNull { it.languageCode.equals(selectedSubtitleLanguage, ignoreCase = true) }
-                                ?.displayLabel ?: "Aktif ($selectedSubtitleLanguage)"
-                        }
-                        val timerLabel = if (sleepTimerMinutes != null) "$sleepTimerMinutes mnt" else "Nonaktif"
-                        val repeatLabel = when (repeatMode) {
-                            RepeatMode.OFF -> "Nonaktif"
-                            RepeatMode.ONE -> "Ulangi Satu"
-                            RepeatMode.ALL -> "Ulangi Semua"
-                        }
-
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            item {
-                                InPlayerMenuItem(
-                                    icon = Icons.Default.HighQuality,
-                                    label = "Kualitas video",
-                                    value = qualityLabel,
-                                    onClick = { onNavigateMenu(InPlayerMenuType.QUALITY) },
-                                )
-                            }
-                            item {
-                                InPlayerMenuItem(
-                                    icon = Icons.Default.Speed,
-                                    label = "Kecepatan pemutaran",
-                                    value = speedLabel,
-                                    onClick = { onNavigateMenu(InPlayerMenuType.SPEED) },
-                                )
-                            }
-                            item {
-                                InPlayerMenuItem(
-                                    icon = Icons.Default.Subtitles,
-                                    label = "Teks (Subtitle)",
-                                    value = subLabel,
-                                    onClick = { onNavigateMenu(InPlayerMenuType.SUBTITLES) },
-                                )
-                            }
-                            item {
-                                InPlayerMenuItem(
-                                    icon = Icons.Default.PlayArrow,
-                                    label = "Putar otomatis",
-                                    value = if (isAutoplayEnabled) "Aktif" else "Mati",
-                                    valueColor = if (isAutoplayEnabled) Gold else Color.White.copy(0.6f),
-                                    onClick = onToggleAutoplay,
-                                )
-                            }
-                            item {
-                                InPlayerMenuItem(
-                                    icon = if (repeatMode == RepeatMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
-                                    label = "Ulangi video",
-                                    value = repeatLabel,
-                                    valueColor = if (repeatMode != RepeatMode.OFF) Gold else Color.White.copy(0.6f),
-                                    onClick = onToggleRepeatMode,
-                                )
-                            }
-                            item {
-                                InPlayerMenuItem(
-                                    icon = Icons.Default.Timer,
-                                    label = "Timer tidur",
-                                    value = timerLabel,
-                                    valueColor = if (sleepTimerMinutes != null) Gold else Color.White.copy(0.6f),
-                                    onClick = { onNavigateMenu(InPlayerMenuType.SLEEP_TIMER) },
-                                )
-                            }
-                            item {
-                                InPlayerMenuItem(
-                                    icon = Icons.Default.FastForward,
-                                    label = "Ketuk lompat",
-                                    value = "$seekDuration dtk",
-                                    onClick = { onNavigateMenu(InPlayerMenuType.SEEK_DURATION) },
-                                )
-                            }
-                        }
-                    }
-
-                    InPlayerMenuType.QUALITY -> {
-                        val activeHeight = currentStreamBundle?.selectedHeight ?: 0
-                        val qualityList = remember(currentStreamBundle?.availableQualities) {
-                            val available = currentStreamBundle?.availableQualities.orEmpty()
-                            val nonAuto = available
-                                .filter { it.height > 0 }
-                                .distinctBy { it.height }
-                                .sortedByDescending { it.height }
-                            if (nonAuto.isNotEmpty()) {
-                                listOf(VideoQuality(height = 0, label = "Otomatis", url = "", isMuxed = false)) + nonAuto
-                            } else {
-                                listOf(
-                                    VideoQuality(height = 0, label = "Otomatis", url = "", isMuxed = false),
-                                    VideoQuality(height = 1080, label = "1080p FHD", url = "", isMuxed = false),
-                                    VideoQuality(height = 720, label = "720p HD", url = "", isMuxed = false),
-                                    VideoQuality(height = 480, label = "480p", url = "", isMuxed = false),
-                                    VideoQuality(height = 360, label = "360p", url = "", isMuxed = false),
-                                    VideoQuality(height = 240, label = "240p", url = "", isMuxed = false),
-                                    VideoQuality(height = 144, label = "144p", url = "", isMuxed = false),
-                                )
-                            }
-                        }
-
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(1.dp),
-                        ) {
-                            items(qualityList) { q ->
-                                val isSelected = if (q.height <= 0) {
-                                    isAutoQuality
-                                } else {
-                                    !isAutoQuality && (activeHeight == q.height || (activeHeight == 0 && q.height == 480))
-                                }
-                                val label = if (q.height <= 0) {
-                                    if (activeHeight > 0) "Otomatis (${activeHeight}p)" else "Otomatis (Disarankan)"
-                                } else {
-                                    when (q.height) {
-                                        2160 -> "4K (2160p)"
-                                        1440 -> "2K (1440p)"
-                                        1080 -> "1080p Full HD"
-                                        720 -> "720p HD"
-                                        else -> "${q.height}p"
-                                    }
-                                }
-                                InPlayerSelectionItem(
-                                    label = label,
-                                    isSelected = isSelected,
-                                    onClick = { onSelectQuality(q) },
-                                )
-                            }
-                        }
-                    }
-
-                    InPlayerMenuType.SPEED -> {
-                        val speedList = remember { listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f) }
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(1.dp),
-                        ) {
-                            items(speedList) { sp ->
-                                val isSelected = (playbackSpeed == sp)
-                                val label = if (sp == 1.0f) "Normal (1.0x)" else "${sp}x"
-                                InPlayerSelectionItem(
-                                    label = label,
-                                    isSelected = isSelected,
-                                    onClick = { onSelectSpeed(sp) },
-                                )
-                            }
-                        }
-                    }
-
-                    InPlayerMenuType.SUBTITLES -> {
-                        val available = currentStreamBundle?.availableSubtitles.orEmpty()
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(1.dp),
-                        ) {
-                            item {
-                                val isOff = selectedSubtitleLanguage.isNullOrEmpty() || selectedSubtitleLanguage == "OFF"
-                                InPlayerSelectionItem(
-                                    label = "Tanpa Teks (Nonaktif)",
-                                    isSelected = isOff,
-                                    onClick = { onSelectSubtitle(null) },
-                                )
-                            }
-                            if (available.isEmpty()) {
-                                item {
-                                    Text(
-                                        text = "Tidak ada teks untuk video ini",
-                                        color = Color.White.copy(alpha = 0.5f),
-                                        fontSize = 12.sp,
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                                    )
-                                }
-                            } else {
-                                items(available) { sub ->
-                                    val isSelected = selectedSubtitleLanguage.equals(sub.languageCode, ignoreCase = true)
-                                    InPlayerSelectionItem(
-                                        label = sub.displayLabel,
-                                        isSelected = isSelected,
-                                        onClick = { onSelectSubtitle(sub.languageCode) },
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    InPlayerMenuType.SLEEP_TIMER -> {
-                        val timerOptions = remember {
-                            listOf(
-                                0 to "Nonaktif (Matikan timer)",
-                                15 to "15 Menit",
-                                30 to "30 Menit",
-                                45 to "45 Menit",
-                                60 to "60 Menit (1 Jam)",
-                                90 to "90 Menit (1,5 Jam)",
-                                120 to "120 Menit (2 Jam)",
-                            )
-                        }
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(1.dp),
-                        ) {
-                            items(timerOptions) { (minutes, label) ->
-                                val isSelected = if (minutes == 0) {
-                                    sleepTimerMinutes == null
-                                } else {
-                                    sleepTimerMinutes != null && sleepTimerMinutes > (minutes - 15) && sleepTimerMinutes <= minutes
-                                }
-                                InPlayerSelectionItem(
-                                    label = label,
-                                    isSelected = isSelected,
-                                    onClick = { onSelectSleepTimer(minutes) },
-                                )
-                            }
-                        }
-                    }
-
-                    InPlayerMenuType.SEEK_DURATION -> {
-                        val seekOptions = remember { listOf(5, 10, 15, 20, 30, 60) }
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(1.dp),
-                        ) {
-                            items(seekOptions) { seconds ->
-                                val isSelected = (seekDuration == seconds)
-                                val label = "$seconds detik" + if (seconds == 10) " (Standar)" else ""
-                                InPlayerSelectionItem(
-                                    label = label,
-                                    isSelected = isSelected,
-                                    onClick = { onSelectSeekDuration(seconds) },
-                                )
-                            }
-                        }
-                    }
-
-                    else -> {}
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun InPlayerMenuItem(
-    icon: ImageVector,
-    label: String,
-    value: String,
-    onClick: () -> Unit,
-    valueColor: Color = Gold,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) { onClick() }
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.weight(1f, fill = false),
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = Color.White.copy(alpha = 0.85f),
-                modifier = Modifier.size(17.dp),
-            )
-            Spacer(modifier = Modifier.width(9.dp))
-            Text(
-                text = label,
-                color = Color.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.End,
-        ) {
-            Text(
-                text = value,
-                color = valueColor,
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = Color.White.copy(alpha = 0.45f),
-                modifier = Modifier.size(15.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun InPlayerSelectionItem(
-    label: String,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) { onClick() }
-            .padding(horizontal = 10.dp, vertical = 7.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = label,
-            fontSize = 12.5.sp,
-            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-            color = if (isSelected) Gold else Color.White,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
-        )
-        if (isSelected) {
-            Icon(
-                imageVector = Icons.Default.Check,
-                contentDescription = "Terpilih",
-                tint = Gold,
-                modifier = Modifier.size(16.dp),
-            )
-        }
-    }
-}

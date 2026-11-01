@@ -156,6 +156,14 @@ class SearchViewModel @Inject constructor(
         }
     }
 
+    fun removeVideo(videoId: String) {
+        searchVideos.removeAll { it.id == videoId }
+        val current = _resultState.value
+        if (current is SearchResultState.Success) {
+            _resultState.value = SearchResultState.Success(searchVideos.toList())
+        }
+    }
+
     fun clearQuery() {
         _query.value = ""
         _suggestions.value = emptyList()

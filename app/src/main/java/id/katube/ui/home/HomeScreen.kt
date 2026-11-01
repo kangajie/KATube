@@ -92,13 +92,13 @@ fun HomeScreen(
         }
     }
 
-    // Infinite scroll trigger reaktif dengan snapshotFlow
+    // Infinite scroll trigger reaktif dengan snapshotFlow (smart prefetch 4 item sebelum mentok)
     LaunchedEffect(gridState, gridColumns) {
         androidx.compose.runtime.snapshotFlow {
             val layoutInfo = gridState.layoutInfo
             val total = layoutInfo.totalItemsCount
             val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            total > 0 && lastVisible >= total - (gridColumns * 2)
+            total > 0 && lastVisible >= total - (gridColumns * 4)
         }.collect { shouldLoad ->
             if (shouldLoad && !isLoadingMore) {
                 viewModel.loadMore()
@@ -173,11 +173,19 @@ fun HomeScreen(
                                     }
                                 },
                                 onPlayInBackground = {
-                                    mainViewModel.playerController.playInBackground(video.id)
+                                    mainViewModel.playerController.playInBackground(video.id, preview = video)
                                 },
                                 onPlayInPopup = {
                                     mainViewModel.playerController.pendingPreviewItem = video
-                                    onVideoClick(video.id)
+                                    if (video.isMix && (!video.playlistId.isNullOrEmpty() || video.id.startsWith("RD"))) {
+                                        mainViewModel.playMix(video) { targetId ->
+                                            onVideoClick(targetId)
+                                            (context as? id.katube.MainActivity)?.enterPipMode()
+                                        }
+                                    } else {
+                                        onVideoClick(video.id)
+                                        (context as? id.katube.MainActivity)?.enterPipMode()
+                                    }
                                 },
                                 onPlayNext = {
                                     mainViewModel.playerController.addToQueueNext(video)
@@ -186,6 +194,14 @@ fun HomeScreen(
                                 onAddToQueue = {
                                     mainViewModel.playerController.addToQueue(video)
                                     android.widget.Toast.makeText(context, "Ditambahkan ke antrean", android.widget.Toast.LENGTH_SHORT).show()
+                                },
+                                onAddToPlaylist = {
+                                    mainViewModel.openAddToPlaylist(video)
+                                },
+                                onAddToWatchLater = {
+                                    mainViewModel.addToWatchLater(video) { _, msg ->
+                                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                                    }
                                 },
                                 onNotInterested = {
                                     viewModel.removeVideo(video.id)

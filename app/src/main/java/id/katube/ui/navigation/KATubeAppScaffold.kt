@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -65,6 +66,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import id.katube.MainViewModel
 import id.katube.R
+import id.katube.data.model.StreamBundle
+import id.katube.player.PlayerController
 import id.katube.ui.channel.ChannelScreen
 import id.katube.ui.components.KATubeBottomNav
 import id.katube.ui.components.KATubeTopBar
@@ -93,15 +96,8 @@ fun KATubeAppScaffold(
     val currentRoute = navBackStackEntry?.destination?.route
 
     val playerController = mainViewModel.playerController
-    val player by playerController.playerState.collectAsState()
-    val isAudioOnly by playerController.isAudioOnly.collectAsState()
     val currentStreamBundle by playerController.currentStreamBundle.collectAsState()
     val isMiniPlayerVisible by playerController.isMiniPlayerVisible.collectAsState()
-    val isPlaying by playerController.isPlaying.collectAsState()
-    val playbackState by playerController.playbackState.collectAsState()
-    val currentPositionMs by playerController.currentPositionMs.collectAsState()
-    val durationMs by playerController.durationMs.collectAsState()
-    val bufferedPositionMs by playerController.bufferedPositionMs.collectAsState()
     val account by mainViewModel.account.collectAsState()
     val isLoggedIn by mainViewModel.isLoggedIn.collectAsState()
 
@@ -121,15 +117,11 @@ fun KATubeAppScaffold(
         Screen.Library.route
     )
 
-    // Tombol Back pada tab utama: Jika video sedang aktif/diputar, ciutkan ke mode PiP mengambang di layar HP persis YouTube
+    // Tombol Back pada tab utama: Keluar langsung ke beranda HP tanpa memunculkan pop-up PiP mengambang, pemutar audio tetap berjalan lancar di latar belakang
     val scaffoldContext = androidx.compose.ui.platform.LocalContext.current
     androidx.activity.compose.BackHandler(enabled = isMainTab && currentRoute == Screen.Home.route && currentStreamBundle != null) {
         val act = scaffoldContext as? id.katube.MainActivity
-        if (isPlaying && !isAudioOnly) {
-            act?.enterPipMode() ?: act?.moveTaskToBack(true)
-        } else {
-            act?.moveTaskToBack(true)
-        }
+        act?.moveTaskToBack(true)
     }
 
     val pendingNavVideoId by mainViewModel.pendingNavigationVideoId.collectAsState()
@@ -148,7 +140,6 @@ fun KATubeAppScaffold(
                 mainViewModel.consumePendingNavigation()
                 val currentWatchId = currentRoute?.removePrefix("watch/")
                 if (!isWatchScreen || currentWatchId != resolvedId) {
-                    playerController.clearPlaylistQueue()
                     navController.navigate(Screen.Watch.createRoute(resolvedId)) {
                         popUpTo(Screen.Home.route) { inclusive = false }
                         launchSingleTop = true
@@ -199,27 +190,11 @@ fun KATubeAppScaffold(
                         modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center,
                     ) {
-                        MiniPlayer(
-                            bundle = currentStreamBundle!!,
-                            player = player,
-                            isAudioOnly = isAudioOnly,
-                            isPlaying = isPlaying,
-                            isBuffering = !isPlaying && (playbackState == androidx.media3.common.Player.STATE_BUFFERING),
-                            currentPositionMs = currentPositionMs,
-                            durationMs = durationMs,
-                            bufferedPositionMs = bufferedPositionMs,
-                            onPrevious = { playerController.playPreviousInQueue() },
-                            onNext = {
-                                if (playerController.queue.value.isNotEmpty()) {
-                                    playerController.playNextInQueue()
-                                } else {
-                                    playerController.playAutoplayNext()
-                                }
-                            },
-                            onTogglePlay = { playerController.togglePlayPause() },
-                            onClose = { playerController.dismissMiniPlayer() },
-                            onClick = {
-                                navController.navigate(Screen.Watch.createRoute(currentStreamBundle!!.videoId)) {
+                        MiniPlayerHost(
+                            playerController = playerController,
+                            currentStreamBundle = currentStreamBundle!!,
+                            onNavigateToWatch = { videoId ->
+                                navController.navigate(Screen.Watch.createRoute(videoId)) {
                                     launchSingleTop = true
                                 }
                             },
@@ -246,6 +221,15 @@ fun KATubeAppScaffold(
                             mainViewModel.onBottomBarReselect(route)
                         }
                     )
+                } else if (!isWatchScreen && currentRoute != Screen.Shorts.route) {
+                    // Ketika di luar tab utama (seperti Search, Channel, Settings),
+                    // selalu sediakan spacer navigasi bawah dengan warna background aplikasi agar tidak transparan
+                    androidx.compose.material3.Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.background,
+                    ) {
+                        Spacer(modifier = Modifier.navigationBarsPadding())
+                    }
                 }
             }
         }
@@ -258,9 +242,13 @@ fun KATubeAppScaffold(
             composable(Screen.Home.route) {
                 HomeScreen(
                     onVideoClick = { videoId ->
-                        mainViewModel.playerController.clearPlaylistQueue()
+                        val qIdx = mainViewModel.playerController.queue.value.indexOfFirst { it.id == videoId }
+                        if (qIdx >= 0) mainViewModel.playerController.setCurrentIndex(qIdx)
                         mainViewModel.playerController.prepareForNewVideo(videoId)
-                        navController.navigate(Screen.Watch.createRoute(videoId))
+                        navController.navigate(Screen.Watch.createRoute(videoId)) {
+                            popUpTo(Screen.Watch.route) { inclusive = true }
+                            launchSingleTop = true
+                        }
                     },
                     mainViewModel = mainViewModel,
                 )
@@ -268,9 +256,13 @@ fun KATubeAppScaffold(
             composable(Screen.Shorts.route) {
                 ShortsScreen(
                     onVideoClick = { videoId ->
-                        mainViewModel.playerController.clearPlaylistQueue()
+                        val qIdx = mainViewModel.playerController.queue.value.indexOfFirst { it.id == videoId }
+                        if (qIdx >= 0) mainViewModel.playerController.setCurrentIndex(qIdx)
                         mainViewModel.playerController.prepareForNewVideo(videoId)
-                        navController.navigate(Screen.Watch.createRoute(videoId))
+                        navController.navigate(Screen.Watch.createRoute(videoId)) {
+                            popUpTo(Screen.Watch.route) { inclusive = true }
+                            launchSingleTop = true
+                        }
                     },
                     mainViewModel = mainViewModel,
                 )
@@ -281,9 +273,13 @@ fun KATubeAppScaffold(
                         navController.navigate(Screen.Search.route)
                     },
                     onVideoClick = { videoId ->
-                        mainViewModel.playerController.clearPlaylistQueue()
+                        val qIdx = mainViewModel.playerController.queue.value.indexOfFirst { it.id == videoId }
+                        if (qIdx >= 0) mainViewModel.playerController.setCurrentIndex(qIdx)
                         mainViewModel.playerController.prepareForNewVideo(videoId)
-                        navController.navigate(Screen.Watch.createRoute(videoId))
+                        navController.navigate(Screen.Watch.createRoute(videoId)) {
+                            popUpTo(Screen.Watch.route) { inclusive = true }
+                            launchSingleTop = true
+                        }
                     },
                     onChannelClick = { channelId ->
                         navController.navigate(Screen.Channel.createRoute(channelId))
@@ -295,9 +291,13 @@ fun KATubeAppScaffold(
                 YouScreen(
                     onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
                     onVideoClick = { videoId ->
-                        mainViewModel.playerController.clearPlaylistQueue()
+                        val qIdx = mainViewModel.playerController.queue.value.indexOfFirst { it.id == videoId }
+                        if (qIdx >= 0) mainViewModel.playerController.setCurrentIndex(qIdx)
                         mainViewModel.playerController.prepareForNewVideo(videoId)
-                        navController.navigate(Screen.Watch.createRoute(videoId))
+                        navController.navigate(Screen.Watch.createRoute(videoId)) {
+                            popUpTo(Screen.Watch.route) { inclusive = true }
+                            launchSingleTop = true
+                        }
                     },
                     onPlaylistClick = { playlistId ->
                         navController.navigate(Screen.Playlist.createRoute(playlistId))
@@ -309,9 +309,13 @@ fun KATubeAppScaffold(
                 SearchScreen(
                     onNavigateBack = { navController.popBackStack() },
                     onVideoClick = { videoId ->
-                        mainViewModel.playerController.clearPlaylistQueue()
+                        val qIdx = mainViewModel.playerController.queue.value.indexOfFirst { it.id == videoId }
+                        if (qIdx >= 0) mainViewModel.playerController.setCurrentIndex(qIdx)
                         mainViewModel.playerController.prepareForNewVideo(videoId)
-                        navController.navigate(Screen.Watch.createRoute(videoId))
+                        navController.navigate(Screen.Watch.createRoute(videoId)) {
+                            popUpTo(Screen.Watch.route) { inclusive = true }
+                            launchSingleTop = true
+                        }
                     }
                 )
             }
@@ -361,9 +365,11 @@ fun KATubeAppScaffold(
                         }
                     },
                     onRelatedVideoClick = { relatedId ->
-                        mainViewModel.playerController.clearPlaylistQueue()
+                        val qIdx = mainViewModel.playerController.queue.value.indexOfFirst { it.id == relatedId }
+                        if (qIdx >= 0) mainViewModel.playerController.setCurrentIndex(qIdx)
                         mainViewModel.playerController.prepareForNewVideo(relatedId)
                         navController.navigate(Screen.Watch.createRoute(relatedId)) {
+                            popUpTo(Screen.Watch.route) { inclusive = true }
                             launchSingleTop = true
                         }
                     },
@@ -391,9 +397,16 @@ fun KATubeAppScaffold(
                         }
                     },
                     onVideoClick = { clickedVideoId ->
-                        mainViewModel.playerController.clearPlaylistQueue()
+                        val qIdx = mainViewModel.playerController.queue.value.indexOfFirst { it.id == clickedVideoId }
+                        if (qIdx >= 0) mainViewModel.playerController.setCurrentIndex(qIdx)
                         mainViewModel.playerController.prepareForNewVideo(clickedVideoId)
-                        navController.navigate(Screen.Watch.createRoute(clickedVideoId))
+                        navController.navigate(Screen.Watch.createRoute(clickedVideoId)) {
+                            popUpTo(Screen.Watch.route) { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    },
+                    onPlaylistClick = { playlistId ->
+                        navController.navigate(Screen.Playlist.createRoute(playlistId))
                     }
                 )
             }
@@ -406,7 +419,10 @@ fun KATubeAppScaffold(
                     playlistId = playlistId,
                     onVideoClick = { clickedVideoId ->
                         mainViewModel.playerController.prepareForNewVideo(clickedVideoId)
-                        navController.navigate(Screen.Watch.createRoute(clickedVideoId))
+                        navController.navigate(Screen.Watch.createRoute(clickedVideoId)) {
+                            popUpTo(Screen.Watch.route) { inclusive = true }
+                            launchSingleTop = true
+                        }
                     }
                 )
             }
@@ -554,8 +570,13 @@ fun KATubeAppScaffold(
                                     .clickable {
                                         if (!notif.videoId.isNullOrEmpty()) {
                                             showNotificationsSheet = false
-                                            mainViewModel.playerController.clearPlaylistQueue()
-                                            navController.navigate(Screen.Watch.createRoute(notif.videoId))
+                                            val qIdx = mainViewModel.playerController.queue.value.indexOfFirst { it.id == notif.videoId }
+                                            if (qIdx >= 0) mainViewModel.playerController.setCurrentIndex(qIdx)
+                                            mainViewModel.playerController.prepareForNewVideo(notif.videoId)
+                                            navController.navigate(Screen.Watch.createRoute(notif.videoId)) {
+                                                popUpTo(Screen.Watch.route) { inclusive = true }
+                                                launchSingleTop = true
+                                            }
                                         }
                                     }
                                     .padding(vertical = 10.dp),
@@ -629,4 +650,70 @@ fun KATubeAppScaffold(
             }
         }
     }
+
+    val targetVideoForPlaylist by mainViewModel.targetVideoForPlaylist.collectAsState()
+    val userPlaylists by mainViewModel.userPlaylists.collectAsState()
+
+    if (targetVideoForPlaylist != null) {
+        val targetVideo = targetVideoForPlaylist!!
+        id.katube.ui.components.AddToPlaylistSheet(
+            video = targetVideo,
+            isLoggedIn = isLoggedIn,
+            playlists = userPlaylists,
+            onDismiss = { mainViewModel.closeAddToPlaylist() },
+            onSelectPlaylist = { plId, plName ->
+                mainViewModel.addVideoToPlaylist(plId, plName, targetVideo) { _, msg ->
+                    android.widget.Toast.makeText(scaffoldContext, msg, android.widget.Toast.LENGTH_SHORT).show()
+                }
+                mainViewModel.closeAddToPlaylist()
+            },
+            onNavigateToLogin = {
+                navController.navigate(Screen.Library.route)
+            }
+        )
+    }
+}
+
+/**
+ * Host terisolasi khusus untuk MiniPlayer.
+ * Mengisolasi pengumpulan state berfrekuensi tinggi (currentPositionMs, durationMs, bufferedPositionMs, playbackState)
+ * agar root KATubeAppScaffold dan NavHost TIDAK ikut ter-recompose setiap 200 ms saat video berjalan!
+ */
+@Composable
+private fun MiniPlayerHost(
+    playerController: PlayerController,
+    currentStreamBundle: StreamBundle,
+    onNavigateToWatch: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val player by playerController.playerState.collectAsState()
+    val isAudioOnly by playerController.isAudioOnly.collectAsState()
+    val isPlaying by playerController.isPlaying.collectAsState()
+    val playbackState by playerController.playbackState.collectAsState()
+    val currentPositionMs by playerController.currentPositionMs.collectAsState()
+    val durationMs by playerController.durationMs.collectAsState()
+    val bufferedPositionMs by playerController.bufferedPositionMs.collectAsState()
+
+    MiniPlayer(
+        bundle = currentStreamBundle,
+        player = player,
+        isAudioOnly = isAudioOnly,
+        isPlaying = isPlaying,
+        isBuffering = !isPlaying && (playbackState == androidx.media3.common.Player.STATE_BUFFERING),
+        currentPositionMs = currentPositionMs,
+        durationMs = durationMs,
+        bufferedPositionMs = bufferedPositionMs,
+        onPrevious = { playerController.playPreviousInQueue() },
+        onNext = {
+            if (playerController.queue.value.isNotEmpty()) {
+                playerController.playNextInQueue()
+            } else {
+                playerController.playAutoplayNext()
+            }
+        },
+        onTogglePlay = { playerController.togglePlayPause() },
+        onClose = { playerController.dismissMiniPlayer() },
+        onClick = { onNavigateToWatch(currentStreamBundle.videoId) },
+        modifier = modifier,
+    )
 }

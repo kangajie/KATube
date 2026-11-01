@@ -40,7 +40,29 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        val isInitialDark = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
+        enableEdgeToEdge(
+            statusBarStyle = if (isInitialDark) {
+                androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+            } else {
+                androidx.activity.SystemBarStyle.light(
+                    android.graphics.Color.TRANSPARENT,
+                    android.graphics.Color.TRANSPARENT,
+                )
+            },
+            navigationBarStyle = if (isInitialDark) {
+                androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+            } else {
+                androidx.activity.SystemBarStyle.light(
+                    android.graphics.Color.TRANSPARENT,
+                    android.graphics.Color.TRANSPARENT,
+                )
+            }
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
         handleIntent(intent)
         // Layar HP tetap menyala selama berada di dalam aplikasi, dan mati normal saat keluar
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -66,6 +88,32 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.LIGHT -> false
             }
 
+            androidx.compose.runtime.DisposableEffect(isDark) {
+                enableEdgeToEdge(
+                    statusBarStyle = if (isDark) {
+                        androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                    } else {
+                        androidx.activity.SystemBarStyle.light(
+                            android.graphics.Color.TRANSPARENT,
+                            android.graphics.Color.TRANSPARENT,
+                        )
+                    },
+                    navigationBarStyle = if (isDark) {
+                        androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                    } else {
+                        androidx.activity.SystemBarStyle.light(
+                            android.graphics.Color.TRANSPARENT,
+                            android.graphics.Color.TRANSPARENT,
+                        )
+                    }
+                )
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    window.isNavigationBarContrastEnforced = false
+                    window.isStatusBarContrastEnforced = false
+                }
+                onDispose {}
+            }
+
             KATubeTheme(darkTheme = isDark) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
@@ -88,15 +136,34 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        val videoId = intent?.getStringExtra(RecommendationNotificationManager.EXTRA_VIDEO_ID)
-            ?: intent?.getStringExtra("open_video_id")
-            ?: intent?.data?.getQueryParameter("v")
-            ?: intent?.data?.lastPathSegment
-        if (!videoId.isNullOrBlank() && !videoId.equals("watch", ignoreCase = true)) {
-            mainViewModel.triggerNavigateToVideo(videoId)
-        } else if (intent?.getBooleanExtra("open_watch_screen", false) == true) {
-            mainViewModel.triggerNavigateToWatch()
+        if (intent == null) return
+        val isOpenWatch = intent.getBooleanExtra("open_watch_screen", false)
+        val directVideoId = intent.getStringExtra(RecommendationNotificationManager.EXTRA_VIDEO_ID)
+            ?: intent.data?.getQueryParameter("v")
+            ?: intent.data?.lastPathSegment
+
+        // Bersihkan intent agar tidak terpanggil ulang saat pengguna kembali masuk ke aplikasi
+        setIntent(Intent(this, MainActivity::class.java))
+
+        if (isOpenWatch) {
+            // Ketika mengklik notifikasi pemutar, SELALU buka video yang sedang aktif diputar saat ini juga!
+            val currentlyPlayingId = mainViewModel.playerController.currentStreamBundle.value?.videoId
+                ?: mainViewModel.playerController.player?.currentMediaItem?.mediaId
+                ?: intent?.getStringExtra("open_video_id")
+
+            if (!currentlyPlayingId.isNullOrBlank() && !currentlyPlayingId.equals("watch", ignoreCase = true)) {
+                mainViewModel.triggerNavigateToVideo(currentlyPlayingId)
+            } else {
+                mainViewModel.triggerNavigateToWatch()
+            }
+        } else if (!directVideoId.isNullOrBlank() && !directVideoId.equals("watch", ignoreCase = true)) {
+            mainViewModel.triggerNavigateToVideo(directVideoId)
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        mainViewModel.playerController.setAppForegroundState(inForeground = true, inPip = false)
     }
 
     override fun onStop() {
@@ -108,6 +175,8 @@ class MainActivity : ComponentActivity() {
 
         // Cek preferensi pemutaran di latar belakang (backgroundPlayMode) dari Pengaturan
         val isPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInPictureInPictureMode else false
+        mainViewModel.playerController.setAppForegroundState(inForeground = false, inPip = isPip)
+
         if (!isPip && mainViewModel.playerController.isPlaying.value) {
             val allowBackground = shouldAllowBackgroundPlay()
             if (!allowBackground) {
@@ -146,22 +215,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        mainViewModel.playerController.setAppForegroundState(inForeground = !isInPictureInPictureMode, inPip = isInPictureInPictureMode)
+    }
+
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (mainViewModel.playerController.isPlaying.value && !mainViewModel.playerController.isAudioOnly.value) {
-            enterPipMode()
-        }
+        // Jangan pernah memunculkan pop-up PiP otomatis saat keluar/meninggalkan aplikasi.
+        // Cukup keluar normal ke beranda HP sementara pemutar audio tetap berjalan di latar belakang.
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (mainViewModel.playerController.isPlaying.value && !mainViewModel.playerController.isAudioOnly.value) {
-            val hasPip = packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE)
-            if (hasPip) {
-                enterPipMode()
-                return
-            }
-        }
+        // Jangan alihkan otomatis ke pop-up PiP saat keluar, biarkan keluar normal ke beranda HP
         super.onBackPressed()
     }
 

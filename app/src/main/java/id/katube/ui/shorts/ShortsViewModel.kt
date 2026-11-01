@@ -157,12 +157,17 @@ class ShortsViewModel @Inject constructor(
         if (_shortsComments.value.containsKey(videoId)) return
         _isLoadingComments.value = _isLoadingComments.value + (videoId to true)
         viewModelScope.launch {
+            val localUserComments = syncRepository.getUserCommentsLocally(videoId)
             repository.getComments(videoId).fold(
                 onSuccess = { list ->
-                    _shortsComments.value = _shortsComments.value + (videoId to list)
+                    val merged = (localUserComments + list).distinctBy { it.id }
+                    _shortsComments.value = _shortsComments.value + (videoId to merged)
                     _isLoadingComments.value = _isLoadingComments.value + (videoId to false)
                 },
                 onFailure = {
+                    if (localUserComments.isNotEmpty()) {
+                        _shortsComments.value = _shortsComments.value + (videoId to localUserComments)
+                    }
                     _isLoadingComments.value = _isLoadingComments.value + (videoId to false)
                 }
             )
@@ -171,7 +176,7 @@ class ShortsViewModel @Inject constructor(
 
     fun addComment(videoId: String, text: String, onResult: ((Boolean, String) -> Unit)? = null) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
+        if (trimmed.isEmpty() || videoId.isEmpty()) return
         viewModelScope.launch {
             val account = authRepository.account.first()
             val authorName = if (account.isLoggedIn && account.displayName.isNotBlank()) {
@@ -189,15 +194,17 @@ class ShortsViewModel @Inject constructor(
                 likeCount = 0,
                 isUserComment = true
             )
+            syncRepository.saveUserCommentLocally(videoId, newComment)
             val currentList = _shortsComments.value[videoId].orEmpty()
-            _shortsComments.value = _shortsComments.value + (videoId to (listOf(newComment) + currentList))
+            _shortsComments.value = _shortsComments.value + (videoId to (listOf(newComment) + currentList.filter { it.id != newComment.id }))
             syncRepository.postComment(videoId, trimmed)
             onResult?.invoke(true, "Komentar berhasil dikirim")
         }
     }
 
     fun deleteComment(videoId: String, commentId: String, onResult: ((Boolean, String) -> Unit)? = null) {
-        if (commentId.isEmpty()) return
+        if (commentId.isEmpty() || videoId.isEmpty()) return
+        syncRepository.deleteUserCommentLocally(videoId, commentId)
         val currentList = _shortsComments.value[videoId].orEmpty()
         _shortsComments.value = _shortsComments.value + (videoId to currentList.filter { it.id != commentId })
         viewModelScope.launch {

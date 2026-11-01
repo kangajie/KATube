@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.background
+import id.katube.core.util.CommentUtils
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -268,9 +269,12 @@ fun YouScreen(
                     .padding(horizontal = 20.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (!account.avatarUrl.isNullOrEmpty()) {
+                val cleanAvatar = remember(account.avatarUrl) {
+                    CommentUtils.sanitizeImageUrl(account.avatarUrl)
+                }
+                if (!cleanAvatar.isNullOrEmpty()) {
                     AsyncImage(
-                        model = account.avatarUrl,
+                        model = cleanAvatar,
                         contentDescription = account.displayName,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
@@ -815,9 +819,12 @@ fun YouScreen(
                         .padding(horizontal = 20.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (!account.avatarUrl.isNullOrEmpty()) {
+                    val cleanAvatar = remember(account.avatarUrl) {
+                        CommentUtils.sanitizeImageUrl(account.avatarUrl)
+                    }
+                    if (!cleanAvatar.isNullOrEmpty()) {
                         AsyncImage(
-                            model = account.avatarUrl,
+                            model = cleanAvatar,
                             contentDescription = account.displayName,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier

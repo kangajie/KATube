@@ -85,15 +85,18 @@ class KATubeApp : Application() {
             .okHttpClient(client)
             .memoryCache {
                 coil.memory.MemoryCache.Builder(this)
-                    .maxSizePercent(0.20)
+                    .maxSizePercent(0.25) // Alokasikan 25% heap memory untuk cache thumbnail & avatar
                     .build()
             }
             .diskCache {
                 coil.disk.DiskCache.Builder()
                     .directory(cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(50L * 1024 * 1024) // 50 MB Cache Disk Thumbnail
+                    .maxSizeBytes(150L * 1024 * 1024) // 150 MB Cache Disk Thumbnail agar browsing sat-set & hemat kuota
                     .build()
             }
+            .crossfade(150) // Transisi gambar halus tanpa kedip
+            .allowRgb565(true) // Hemat 50% memori bitmap RAM untuk thumbnail video
+            .networkObserverEnabled(true)
             .respectCacheHeaders(false)
             .build()
 

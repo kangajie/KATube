@@ -10,6 +10,8 @@ import id.katube.data.model.GoogleAccount
 import id.katube.data.model.KATubeNotification
 import id.katube.data.model.PlaylistItem
 import id.katube.data.model.VideoItem
+import id.katube.data.model.CommentItem
+import id.katube.core.util.CommentUtils
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
@@ -97,8 +99,104 @@ class YouTubeSyncRepository @Inject constructor(
         context.getSharedPreferences("katube_subs_prefs", Context.MODE_PRIVATE)
     }
 
+    private val commentsPrefs by lazy {
+        context.getSharedPreferences("katube_user_comments_prefs", Context.MODE_PRIVATE)
+    }
+
     private val userLikedVideoIds = mutableSetOf<String>()
     private val userDislikedVideoIds = mutableSetOf<String>()
+    private val localUserCommentsMap = mutableMapOf<String, MutableList<CommentItem>>()
+
+    private fun loadUserCommentsFromPrefs() {
+        try {
+            val allEntries = commentsPrefs.all
+            synchronized(localUserCommentsMap) {
+                localUserCommentsMap.clear()
+                for ((key, value) in allEntries) {
+                    if (key.startsWith("comments_") && value is String) {
+                        val vId = key.removePrefix("comments_")
+                        val items = mutableListOf<CommentItem>()
+                        val jsonArr = org.json.JSONArray(value)
+                        for (i in 0 until jsonArr.length()) {
+                            val obj = jsonArr.getJSONObject(i)
+                            items.add(
+                                CommentItem(
+                                    id = obj.optString("id"),
+                                    authorName = obj.optString("authorName"),
+                                    authorAvatarUrl = obj.optString("authorAvatarUrl").ifBlank { null },
+                                    text = obj.optString("text"),
+                                    uploadDateText = obj.optString("uploadDateText", "Baru saja"),
+                                    likeCount = obj.optInt("likeCount", 0),
+                                    isUserComment = true
+                                )
+                            )
+                        }
+                        if (items.isNotEmpty()) {
+                            localUserCommentsMap[vId] = items
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    fun saveUserCommentLocally(videoId: String, comment: CommentItem) {
+        if (videoId.isBlank()) return
+        synchronized(localUserCommentsMap) {
+            val list = localUserCommentsMap.getOrPut(videoId) { mutableListOf() }
+            list.removeAll { it.id == comment.id }
+            list.add(0, comment.copy(isUserComment = true))
+            try {
+                val jsonArr = org.json.JSONArray()
+                for (item in list) {
+                    val obj = org.json.JSONObject().apply {
+                        put("id", item.id)
+                        put("authorName", item.authorName)
+                        put("authorAvatarUrl", item.authorAvatarUrl ?: "")
+                        put("text", item.text)
+                        put("uploadDateText", item.uploadDateText ?: "Baru saja")
+                        put("likeCount", item.likeCount)
+                    }
+                    jsonArr.put(obj)
+                }
+                commentsPrefs.edit().putString("comments_$videoId", jsonArr.toString()).apply()
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun deleteUserCommentLocally(videoId: String, commentId: String) {
+        if (videoId.isBlank() || commentId.isBlank()) return
+        synchronized(localUserCommentsMap) {
+            val list = localUserCommentsMap[videoId] ?: return
+            list.removeAll { it.id == commentId }
+            try {
+                if (list.isEmpty()) {
+                    commentsPrefs.edit().remove("comments_$videoId").apply()
+                } else {
+                    val jsonArr = org.json.JSONArray()
+                    for (item in list) {
+                        val obj = org.json.JSONObject().apply {
+                            put("id", item.id)
+                            put("authorName", item.authorName)
+                            put("authorAvatarUrl", item.authorAvatarUrl ?: "")
+                            put("text", item.text)
+                            put("uploadDateText", item.uploadDateText ?: "Baru saja")
+                            put("likeCount", item.likeCount)
+                        }
+                        jsonArr.put(obj)
+                    }
+                    commentsPrefs.edit().putString("comments_$videoId", jsonArr.toString()).apply()
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun getUserCommentsLocally(videoId: String): List<CommentItem> {
+        if (videoId.isBlank()) return emptyList()
+        return synchronized(localUserCommentsMap) {
+            localUserCommentsMap[videoId]?.toList().orEmpty()
+        }
+    }
 
     private fun loadLikesFromPrefs() {
         try {
@@ -187,6 +285,7 @@ class YouTubeSyncRepository @Inject constructor(
     init {
         loadLikesFromPrefs()
         loadSubsFromPrefs()
+        loadUserCommentsFromPrefs()
 
         val scope = CoroutineScope(ioDispatcher)
 
@@ -1134,7 +1233,7 @@ class YouTubeSyncRepository @Inject constructor(
      * Mengambil detail playlist beserta seluruh daftar videonya langsung via Innertube API
      * (Mendukung Tonton Nanti "WL", Video yang Disukai "LL", dan Playlist Akun maupun Publik).
      */
-    suspend fun fetchPlaylistDetails(playlistId: String): Result<PlaylistItem> = withContext(ioDispatcher) {
+    suspend fun fetchPlaylistDetails(playlistId: String, seedVideoId: String? = null): Result<PlaylistItem> = withContext(ioDispatcher) {
         try {
             val cleanId = playlistId
                 .substringAfter("list=")
@@ -1149,6 +1248,9 @@ class YouTubeSyncRepository @Inject constructor(
                 val cookies = if (account.isLoggedIn) account.cookies else ""
                 val payload = createInnertubeContext().apply {
                     put("playlistId", cleanId)
+                    if (!seedVideoId.isNullOrEmpty()) {
+                        put("videoId", seedVideoId)
+                    }
                 }
                 val responseJson = postInnertube("next", payload, cookies)
                 val panelList = mutableListOf<JSONObject>()
@@ -1674,6 +1776,7 @@ class YouTubeSyncRepository @Inject constructor(
         val viewCountText: String? = null,
         val uploadDateText: String? = null,
         val viewCountNumber: Long? = null,
+        val commentsContinuationToken: String? = null,
     )
 
     /**
@@ -1713,6 +1816,7 @@ class YouTubeSyncRepository @Inject constructor(
             var viewCountText: String? = null
             var uploadDateText: String? = null
             var viewCountNumber: Long? = null
+            var commentsContinuationToken: String? = null
 
             // 1. Cek status like dari cache in-memory lokal
             if (userLikedVideoIds.contains(videoId)) {
@@ -1823,7 +1927,47 @@ class YouTubeSyncRepository @Inject constructor(
                         }
                     }
 
-                    // Fallback channelId jika belum ditemukan: cari browseEndpoint yang diawali "UC"
+                    // Ekstraksi token kelanjutan komentar resmi InnerTube
+                    val itemSections = mutableListOf<JSONObject>()
+                    findObjectsWithKey(responseJson, "itemSectionRenderer", itemSections)
+                    for (isSec in itemSections) {
+                        if (isSec.optString("sectionIdentifier") == "comment-item-section" || isSec.has("contents")) {
+                            val contArr = isSec.optJSONArray("contents")
+                            if (contArr != null) {
+                                for (ci in 0 until contArr.length()) {
+                                    val cir = contArr.optJSONObject(ci)?.optJSONObject("continuationItemRenderer")
+                                    val token = cir?.optJSONObject("continuationEndpoint")
+                                        ?.optJSONObject("continuationCommand")
+                                        ?.optString("token")
+                                        ?.takeIf { it.isNotBlank() }
+                                    if (token != null) {
+                                        commentsContinuationToken = token
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                        if (commentsContinuationToken != null) break
+                    }
+
+                    // Fallback cerdas: cari continuationCommand ber-token komentar di seluruh respon JSON
+                    if (commentsContinuationToken == null) {
+                        val contCommands = mutableListOf<JSONObject>()
+                        findObjectsWithKey(responseJson, "continuationCommand", contCommands)
+                        for (cmd in contCommands) {
+                            val tok = cmd.optString("token")
+                            if (tok.startsWith("Eg0SC") || tok.startsWith("EgQSC")) {
+                                commentsContinuationToken = tok
+                                break
+                            }
+                        }
+                    }
+
+                    // Fallback regex jika masih belum ditemukan
+                    if (commentsContinuationToken == null) {
+                        val tokRegex = Regex(""""token"\s*:\s*"(Eg0SC[^"]+|EgQSC[^"]+)"""")
+                        commentsContinuationToken = tokRegex.find(responseJson.toString())?.groupValues?.get(1)
+                    }
                     if (channelId.isNullOrEmpty()) {
                         val browseEndpoints = mutableListOf<JSONObject>()
                         findObjectsWithKey(responseJson, "browseEndpoint", browseEndpoints)
@@ -1912,8 +2056,217 @@ class YouTubeSyncRepository @Inject constructor(
                     viewCountText = viewCountText,
                     uploadDateText = uploadDateText,
                     viewCountNumber = viewCountNumber,
+                    commentsContinuationToken = commentsContinuationToken,
                 )
             )
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Mengambil daftar komentar video resmi dari InnerTube API.
+     * Mengembalikan komentar lengkap beserta URL foto avatar asli pengguna (Google yt3.ggpht CDN).
+     */
+    suspend fun fetchComments(videoId: String, continuationToken: String? = null): Result<List<CommentItem>> = withContext(ioDispatcher) {
+        try {
+            val account = authRepository.account.first()
+            val cookies = if (account.isLoggedIn) account.cookies else ""
+
+            // 1. Dapatkan token komentar jika belum ada
+            val targetToken = if (!continuationToken.isNullOrBlank()) {
+                continuationToken
+            } else {
+                val watchData = fetchWatchNextRelated(videoId).getOrNull()
+                watchData?.commentsContinuationToken
+            }
+
+            if (targetToken.isNullOrBlank()) {
+                return@withContext Result.failure(IllegalStateException("Komentar tidak tersedia atau dinonaktifkan"))
+            }
+
+            // 2. Request komentar ke endpoint /next InnerTube
+            val payload = JSONObject().apply {
+                put("context", createInnertubeContext().getJSONObject("context"))
+                put("continuation", targetToken)
+            }
+
+            val responseJson = postInnertube("next", payload, cookies)
+            val commentItems = mutableListOf<CommentItem>()
+
+            // 3. Ekstraksi Primer: Format modern InnerTube entity mutations (commentEntityPayload)
+            val commentEntities = mutableListOf<JSONObject>()
+            findObjectsWithKey(responseJson, "commentEntityPayload", commentEntities)
+            for (cep in commentEntities) {
+                try {
+                    val properties = cep.optJSONObject("properties")
+                    val commentId = properties?.optString("commentId").orEmpty()
+                    val text = CommentUtils.cleanCommentText(properties?.optJSONObject("content")?.optString("content").orEmpty())
+                    val uploadDateText = properties?.optString("publishedTime").orEmpty()
+
+                    val author = cep.optJSONObject("author")
+                    val rawAuthorName = author?.optString("displayName").orEmpty()
+                    val authorName = CommentUtils.formatAuthorHandle(rawAuthorName)
+                    val rawAvatarUrl = author?.optString("avatarThumbnailUrl").orEmpty()
+                    val authorAvatarUrl = CommentUtils.sanitizeImageUrl(rawAvatarUrl)
+
+                    val toolbar = cep.optJSONObject("toolbar")
+                    val likeText = toolbar?.optString("likeCountNotliked")
+                        ?: toolbar?.optString("likeCountLiked")
+                        ?: toolbar?.optString("likeCount")
+                    val likeCount = parseViewCountText(likeText.orEmpty()).toInt().coerceAtLeast(0)
+
+                    if (commentId.isNotBlank() && (text.isNotBlank() || authorName.isNotBlank())) {
+                        commentItems.add(
+                            CommentItem(
+                                id = commentId,
+                                authorName = authorName,
+                                authorAvatarUrl = authorAvatarUrl,
+                                text = text,
+                                uploadDateText = uploadDateText.ifBlank { null },
+                                likeCount = likeCount,
+                            )
+                        )
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // 4. Ekstraksi Sekunder (Fallback): Format pohon renderer konvensional (commentThreadRenderer / commentRenderer)
+            if (commentItems.isEmpty()) {
+                val threadRenderers = mutableListOf<JSONObject>()
+                findObjectsWithKey(responseJson, "commentThreadRenderer", threadRenderers)
+
+                for (thread in threadRenderers) {
+                    try {
+                        val commentObj = thread.optJSONObject("comment")
+                        val commentRenderer = commentObj?.optJSONObject("commentRenderer")
+                        val commentViewModel = commentObj?.optJSONObject("commentViewModel")?.optJSONObject("commentViewModel")
+                            ?: thread.optJSONObject("commentViewModel")?.optJSONObject("commentViewModel")
+
+                        var commentId = ""
+                        var authorName = ""
+                        var authorAvatarUrl: String? = null
+                        var text = ""
+                        var uploadDateText = ""
+                        var likeCount = 0
+
+                        if (commentRenderer != null) {
+                            commentId = commentRenderer.optString("commentId")
+                            authorName = getTextFromRunsOrSimple(commentRenderer.optJSONObject("authorText"))
+                            val thumbs = commentRenderer.optJSONObject("authorThumbnail")?.optJSONArray("thumbnails")
+                                ?: commentRenderer.optJSONObject("authorAvatar")?.optJSONArray("thumbnails")
+                            if (thumbs != null && thumbs.length() > 0) {
+                                val rawUrl = thumbs.optJSONObject(thumbs.length() - 1)?.optString("url")
+                                    ?: thumbs.optJSONObject(0)?.optString("url")
+                                authorAvatarUrl = CommentUtils.sanitizeImageUrl(rawUrl)
+                            }
+                            text = CommentUtils.cleanCommentText(getTextFromRunsOrSimple(commentRenderer.optJSONObject("contentText")))
+                            uploadDateText = getTextFromRunsOrSimple(commentRenderer.optJSONObject("publishedTimeText"))
+                            val voteText = getTextFromRunsOrSimple(commentRenderer.optJSONObject("voteCount"))
+                            likeCount = parseViewCountText(voteText).toInt().coerceAtLeast(0)
+                        } else if (commentViewModel != null) {
+                            commentId = commentViewModel.optString("commentKey")
+                            authorName = commentViewModel.optString("authorName")
+                                .ifBlank { getTextFromRunsOrSimple(commentViewModel.optJSONObject("authorText")) }
+                                .ifBlank { commentViewModel.optJSONObject("author")?.optString("displayName").orEmpty() }
+
+                            val avatarObj = commentViewModel.optJSONObject("avatar")?.optJSONObject("avatarViewModel")?.optJSONObject("image")
+                                ?: commentViewModel.optJSONObject("avatar")?.optJSONObject("image")
+                                ?: commentViewModel.optJSONObject("avatarImage")
+                                ?: commentViewModel.optJSONObject("authorAvatarImage")
+                                ?: commentViewModel.optJSONObject("authorThumbnail")
+                            val sources = avatarObj?.optJSONArray("sources") ?: avatarObj?.optJSONArray("thumbnails")
+                            if (sources != null && sources.length() > 0) {
+                                val rawUrl = sources.optJSONObject(sources.length() - 1)?.optString("url")
+                                    ?: sources.optJSONObject(0)?.optString("url")
+                                authorAvatarUrl = CommentUtils.sanitizeImageUrl(rawUrl)
+                            }
+                            text = CommentUtils.cleanCommentText(
+                                commentViewModel.optJSONObject("contentText")?.optString("content")
+                                    ?: getTextFromRunsOrSimple(commentViewModel.optJSONObject("contentText"))
+                            )
+                            uploadDateText = commentViewModel.optString("publishedTime")
+                            val likeText = commentViewModel.optString("likeCount")
+                            likeCount = parseViewCountText(likeText).toInt().coerceAtLeast(0)
+                        }
+
+                        // Fallback cerdas: cari avatar url dari thread/commentObj
+                        if (authorAvatarUrl.isNullOrBlank()) {
+                            fun findAvatar(node: Any): String? {
+                                when (node) {
+                                    is JSONObject -> {
+                                        val u = node.optString("url")
+                                        if (u.isNotBlank() && (u.contains("ggpht.com") || u.contains("googleusercontent.com") || u.contains("yt3.") || u.contains("yt4."))) {
+                                            return CommentUtils.sanitizeImageUrl(u)
+                                        }
+                                        val itKeys = node.keys()
+                                        while (itKeys.hasNext()) {
+                                            val f = findAvatar(node.opt(itKeys.next()) ?: continue)
+                                            if (f != null) return f
+                                        }
+                                    }
+                                    is JSONArray -> {
+                                        for (idx in 0 until node.length()) {
+                                            val f = findAvatar(node.opt(idx) ?: continue)
+                                            if (f != null) return f
+                                        }
+                                    }
+                                }
+                                return null
+                            }
+                            authorAvatarUrl = findAvatar(commentObj ?: thread)
+                        }
+
+                        if (commentId.isNotBlank() && (text.isNotBlank() || authorName.isNotBlank())) {
+                            commentItems.add(
+                                CommentItem(
+                                    id = commentId,
+                                    authorName = CommentUtils.formatAuthorHandle(authorName),
+                                    authorAvatarUrl = authorAvatarUrl,
+                                    text = text,
+                                    uploadDateText = uploadDateText.ifBlank { null },
+                                    likeCount = likeCount,
+                                )
+                            )
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+
+            // 5. Fallback Tersier: Regex string scanner untuk mengekstrak commentEntityPayload jika JSON ter-nesting dalam
+            if (commentItems.isEmpty()) {
+                try {
+                    val rawStr = responseJson.toString()
+                    val cepKey = "\"commentEntityPayload\":"
+                    var cepIdx = rawStr.indexOf(cepKey)
+                    while (cepIdx >= 0) {
+                        val endIdx = rawStr.indexOf("},\"author\":", cepIdx)
+                        if (endIdx >= 0) {
+                            val authorEnd = rawStr.indexOf("}", endIdx + 11)
+                            val block = rawStr.substring(cepIdx, Math.min(rawStr.length, authorEnd + 300))
+                            val cId = Regex("\"commentId\"\\s*:\\s*\"([^\"]+)\"").find(block)?.groupValues?.get(1).orEmpty()
+                            val text = Regex("\"content\"\\s*:\\s*\"([^\"]+)\"").find(block)?.groupValues?.get(1).orEmpty()
+                            val name = Regex("\"displayName\"\\s*:\\s*\"([^\"]+)\"").find(block)?.groupValues?.get(1).orEmpty()
+                            val avatar = Regex("\"avatarThumbnailUrl\"\\s*:\\s*\"([^\"]+)\"").find(block)?.groupValues?.get(1).orEmpty()
+                            if (cId.isNotBlank() && name.isNotBlank()) {
+                                commentItems.add(
+                                    CommentItem(
+                                        id = cId,
+                                        authorName = CommentUtils.formatAuthorHandle(name),
+                                        authorAvatarUrl = CommentUtils.sanitizeImageUrl(avatar),
+                                        text = CommentUtils.cleanCommentText(text),
+                                        uploadDateText = null,
+                                        likeCount = 0
+                                    )
+                                )
+                            }
+                        }
+                        cepIdx = rawStr.indexOf(cepKey, cepIdx + cepKey.length)
+                    }
+                } catch (_: Exception) {}
+            }
+
+            Result.success(commentItems)
         } catch (e: Exception) {
             Result.failure(e)
         }

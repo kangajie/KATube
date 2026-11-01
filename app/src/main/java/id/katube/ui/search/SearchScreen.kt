@@ -383,7 +383,13 @@ fun SearchScreen(
                                     video = video,
                                     onClick = {
                                         mainViewModel.playerController.pendingPreviewItem = video
-                                        onVideoClick(video.id)
+                                        if (video.isMix && (!video.playlistId.isNullOrEmpty() || video.id.startsWith("RD"))) {
+                                            mainViewModel.playMix(video) { targetId ->
+                                                onVideoClick(targetId)
+                                            }
+                                        } else {
+                                            onVideoClick(video.id)
+                                        }
                                     },
                                     onPlayNext = {
                                         mainViewModel.playerController.addToQueueNext(video)
@@ -394,12 +400,23 @@ fun SearchScreen(
                                         android.widget.Toast.makeText(context, "Ditambahkan ke antrean", android.widget.Toast.LENGTH_SHORT).show()
                                     },
                                     onPlayInBackground = {
-                                        mainViewModel.playerController.playInBackground(video.id)
+                                        mainViewModel.playerController.playInBackground(video.id, preview = video)
                                     },
                                     onPlayInPopup = {
                                         mainViewModel.playerController.pendingPreviewItem = video
                                         onVideoClick(video.id)
                                         (context as? id.katube.MainActivity)?.enterPipMode()
+                                    },
+                                    onAddToPlaylist = {
+                                        mainViewModel.openAddToPlaylist(video)
+                                    },
+                                    onAddToWatchLater = {
+                                        mainViewModel.addToWatchLater(video) { _, msg ->
+                                            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onNotInterested = {
+                                        viewModel.removeVideo(video.id)
                                     },
                                 )
                             }

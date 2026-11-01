@@ -109,6 +109,7 @@ class WatchViewModel @Inject constructor(
     private var activeArtistKeyword: String? = null
     private var autoDiscoveryJob: Job? = null
     private val sessionPlayedVideoIds = mutableSetOf<String>()
+    private var currentCommentsToken: String? = null
 
     val seekDuration: StateFlow<Int> = preferencesRepository.seekDuration
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 10)
@@ -128,8 +129,9 @@ class WatchViewModel @Inject constructor(
     fun playQueueIndex(index: Int) {
         val q = playerController.queue.value
         if (index in q.indices) {
+            val target = q[index]
             playerController.setCurrentIndex(index)
-            loadVideo(q[index].id, addToHistory = true)
+            loadVideo(target.id, addToHistory = true, previewItem = target)
         }
     }
 
@@ -165,122 +167,198 @@ class WatchViewModel @Inject constructor(
         viewModelScope.launch {
             playerController.currentStreamBundle.collect { activeBundle ->
                 if (activeBundle != null && activeBundle.videoId != currentVideoId && activeBundle.videoId.isNotEmpty()) {
-                    syncWithActivePlayer(activeBundle)
+                    currentVideoId = activeBundle.videoId
+                    val hasPlayableMedia = !activeBundle.selectedVideoUrl.isNullOrEmpty() ||
+                        activeBundle.selectedAudioUrl.isNotEmpty() ||
+                        !activeBundle.hlsUrl.isNullOrEmpty()
+                    if (hasPlayableMedia) {
+                        _uiState.value = WatchUiState.Success(activeBundle)
+                    } else {
+                        _uiState.value = WatchUiState.Loading(
+                            id.katube.data.model.VideoItem(
+                                id = activeBundle.videoId,
+                                url = "https://www.youtube.com/watch?v=${activeBundle.videoId}",
+                                title = activeBundle.title,
+                                uploaderName = activeBundle.uploaderName,
+                                uploaderAvatarUrl = activeBundle.uploaderAvatarUrl,
+                                thumbnailUrl = activeBundle.thumbnailUrl,
+                                durationSeconds = activeBundle.durationSeconds,
+                            )
+                        )
+                    }
+                    _relatedVideos.value = activeBundle.relatedVideos
+                    _uploaderSubscriberText.value = activeBundle.uploaderSubscriberText
+                    currentUploaderUrl = activeBundle.uploaderUrl.orEmpty()
+                    currentUploaderName = activeBundle.uploaderName
+                    sessionPlayedVideoIds.add(activeBundle.videoId)
+
+                    // Pulihkan status suka, tidak suka, dan subscribe untuk video baru ini
+                    _isLiked.value = syncRepository.isLikedLocally(activeBundle.videoId)
+                    _isDisliked.value = syncRepository.isDislikedLocally(activeBundle.videoId)
+                    _isSubscribed.value = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName)
+
+                    // Reset & muat komentar serta metadata video baru ini seketika
+                    _comments.value = emptyList()
+                    loadComments()
+
+                    watchNextJob?.cancel()
+                    watchNextJob = launch {
+                        syncRepository.fetchWatchNextRelated(activeBundle.videoId).onSuccess { data ->
+                            if (!data.viewCountText.isNullOrBlank()) {
+                                _videoViewsText.value = data.viewCountText
+                            }
+                            if (!data.uploadDateText.isNullOrBlank()) {
+                                _videoUploadDateText.value = data.uploadDateText
+                            }
+                            if (!data.commentCountText.isNullOrBlank()) {
+                                _commentCountText.value = data.commentCountText
+                            }
+                            if (!data.commentTeaserText.isNullOrBlank()) {
+                                _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
+                            }
+                            if (!data.subscriberText.isNullOrBlank()) {
+                                _uploaderSubscriberText.value = data.subscriberText
+                            }
+                            if (!data.channelAvatarUrl.isNullOrBlank()) {
+                                _channelAvatarUrl.value = data.channelAvatarUrl
+                            }
+                            currentCommentsToken = data.commentsContinuationToken
+                            if (!data.channelId.isNullOrEmpty()) {
+                                currentChannelId = data.channelId
+                            }
+                            val localSub = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName) ||
+                                (!data.channelId.isNullOrEmpty() && syncRepository.isSubscribedLocally(data.channelId))
+                            _isSubscribed.value = (data.isSubscribed == true) || localSub
+
+                            val isLocalLiked = syncRepository.isLikedLocally(activeBundle.videoId)
+                            val isLocalDisliked = syncRepository.isDislikedLocally(activeBundle.videoId)
+                            if (isLocalLiked || data.likeStatus == "LIKE") {
+                                _isLiked.value = true
+                                _isDisliked.value = false
+                            } else if (isLocalDisliked || data.likeStatus == "DISLIKE") {
+                                _isLiked.value = false
+                                _isDisliked.value = true
+                            }
+                            if (data.relatedVideos.isNotEmpty()) {
+                                _relatedVideos.value = (activeBundle.relatedVideos + data.relatedVideos).distinctBy { it.id }
+                                playerController.updateRelatedVideos(data.relatedVideos)
+                            }
+                            nextRelatedContinuation = data.nextContinuation
+                        }
+                    }
+
+                    syncRepository.recordLocalWatchHistory(id.katube.data.model.VideoItem(
+                        id = activeBundle.videoId,
+                        url = "https://www.youtube.com/watch?v=${activeBundle.videoId}",
+                        title = activeBundle.title,
+                        uploaderName = activeBundle.uploaderName,
+                        uploaderAvatarUrl = activeBundle.uploaderAvatarUrl,
+                        uploaderUrl = activeBundle.uploaderUrl,
+                        durationSeconds = activeBundle.durationSeconds,
+                        viewCount = activeBundle.viewCount,
+                        uploadDateText = activeBundle.uploadDateText,
+                        thumbnailUrl = activeBundle.thumbnailUrl,
+                    ))
+                } else if (activeBundle != null && activeBundle.videoId == currentVideoId) {
+                    val hasPlayableMedia = !activeBundle.selectedVideoUrl.isNullOrEmpty() ||
+                        activeBundle.selectedAudioUrl.isNotEmpty() ||
+                        !activeBundle.hlsUrl.isNullOrEmpty()
+                    if (hasPlayableMedia && _uiState.value !is WatchUiState.Success) {
+                        _uiState.value = WatchUiState.Success(activeBundle)
+                    }
+                    if (_channelAvatarUrl.value.isNullOrBlank() && !activeBundle.uploaderAvatarUrl.isNullOrBlank()) {
+                        _channelAvatarUrl.value = activeBundle.uploaderAvatarUrl
+                    }
+                    if (_uploaderSubscriberText.value.isNullOrBlank() && !activeBundle.uploaderSubscriberText.isNullOrBlank()) {
+                        _uploaderSubscriberText.value = activeBundle.uploaderSubscriberText
+                    }
+                    if (_relatedVideos.value.isEmpty() && activeBundle.relatedVideos.isNotEmpty()) {
+                        _relatedVideos.value = activeBundle.relatedVideos
+                    }
+                    if (_videoViewsText.value.isNullOrBlank() && activeBundle.viewCount > 0) {
+                        _videoViewsText.value = "${activeBundle.formattedViews} ditonton"
+                    }
+                    if (_videoUploadDateText.value.isNullOrBlank() && !activeBundle.uploadDateText.isNullOrBlank()) {
+                        _videoUploadDateText.value = activeBundle.uploadDateText
+                    }
                 }
             }
         }
 
         val activeBundle = playerController.currentStreamBundle.value
-        val hasPlayableMedia = activeBundle != null && (
-            !activeBundle.selectedVideoUrl.isNullOrEmpty() ||
-            activeBundle.selectedAudioUrl.isNotEmpty() ||
-            !activeBundle.hlsUrl.isNullOrEmpty() ||
-            playerController.player != null
-        )
-        if (activeBundle != null && (hasPlayableMedia || activeBundle.videoId == currentVideoId)) {
-            // Video ini sedang aktif diputar! Tampilkan UI langsung dan pertahankan pemutaran
-            syncWithActivePlayer(activeBundle)
+        if (activeBundle != null && activeBundle.videoId == currentVideoId && (playerController.player != null || !activeBundle.selectedVideoUrl.isNullOrEmpty())) {
+            // Video ini sedang aktif diputar! Tampilkan UI langsung dan pulihkan status Like, Dislike, Subscribe & Avatar
+            _uiState.value = WatchUiState.Success(activeBundle)
+            currentUploaderName = activeBundle.uploaderName
+            currentUploaderUrl = activeBundle.uploaderUrl.orEmpty()
+            currentChannelId = activeBundle.uploaderUrl?.substringAfterLast("/").orEmpty()
+            _isLiked.value = syncRepository.isLikedLocally(currentVideoId)
+            _isDisliked.value = syncRepository.isDislikedLocally(currentVideoId)
+            _isSubscribed.value = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName)
+            _relatedVideos.value = activeBundle.relatedVideos
+            _uploaderSubscriberText.value = activeBundle.uploaderSubscriberText
+            if (!activeBundle.uploaderAvatarUrl.isNullOrEmpty()) {
+                _channelAvatarUrl.value = activeBundle.uploaderAvatarUrl
+            }
+            if (_videoViewsText.value.isNullOrBlank() && activeBundle.viewCount > 0) {
+                _videoViewsText.value = "${activeBundle.formattedViews} ditonton"
+            }
+            if (_videoUploadDateText.value.isNullOrBlank() && !activeBundle.uploadDateText.isNullOrBlank()) {
+                _videoUploadDateText.value = activeBundle.uploadDateText
+            }
+            // Segera sinkronkan metadata lanjutan (views riil YouTube, avatar, subscriber, related videos)
+            watchNextJob?.cancel()
+            watchNextJob = viewModelScope.launch {
+                syncRepository.fetchWatchNextRelated(currentVideoId).onSuccess { data ->
+                    if (!data.viewCountText.isNullOrBlank()) {
+                        _videoViewsText.value = data.viewCountText
+                    }
+                    if (!data.uploadDateText.isNullOrBlank()) {
+                        _videoUploadDateText.value = data.uploadDateText
+                    }
+                    if (!data.commentCountText.isNullOrBlank()) {
+                        _commentCountText.value = data.commentCountText
+                    }
+                    if (!data.commentTeaserText.isNullOrBlank()) {
+                        _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
+                    }
+                    if (!data.subscriberText.isNullOrBlank()) {
+                        _uploaderSubscriberText.value = data.subscriberText
+                    }
+                    if (!data.channelAvatarUrl.isNullOrBlank()) {
+                        _channelAvatarUrl.value = data.channelAvatarUrl
+                    }
+                    currentCommentsToken = data.commentsContinuationToken
+                    if (!data.channelId.isNullOrEmpty()) {
+                        currentChannelId = data.channelId
+                    }
+                    val localSub = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName) ||
+                        (!data.channelId.isNullOrEmpty() && syncRepository.isSubscribedLocally(data.channelId))
+                    _isSubscribed.value = (data.isSubscribed == true) || localSub
+
+                    val isLocalLiked = syncRepository.isLikedLocally(currentVideoId)
+                    val isLocalDisliked = syncRepository.isDislikedLocally(currentVideoId)
+                    if (isLocalLiked || data.likeStatus == "LIKE") {
+                        _isLiked.value = true
+                        _isDisliked.value = false
+                    } else if (isLocalDisliked || data.likeStatus == "DISLIKE") {
+                        _isLiked.value = false
+                        _isDisliked.value = true
+                    }
+                    if (data.relatedVideos.isNotEmpty()) {
+                        _relatedVideos.value = (activeBundle.relatedVideos + data.relatedVideos).distinctBy { it.id }
+                        playerController.updateRelatedVideos(data.relatedVideos)
+                    }
+                    nextRelatedContinuation = data.nextContinuation
+                }
+            }
+            if (_comments.value.isEmpty()) {
+                loadComments()
+            }
         } else {
             // Rekam video ke riwayat pemutaran lokal dan YouTube
             loadVideo(currentVideoId, addToHistory = true)
         }
-    }
-
-    fun syncWithActivePlayer(activeBundle: StreamBundle) {
-        if (activeBundle.videoId.isEmpty()) return
-        currentVideoId = activeBundle.videoId
-        val hasPlayableMedia = !activeBundle.selectedVideoUrl.isNullOrEmpty() ||
-            activeBundle.selectedAudioUrl.isNotEmpty() ||
-            !activeBundle.hlsUrl.isNullOrEmpty()
-        if (hasPlayableMedia) {
-            _uiState.value = WatchUiState.Success(activeBundle)
-        } else {
-            _uiState.value = WatchUiState.Loading(
-                id.katube.data.model.VideoItem(
-                    id = activeBundle.videoId,
-                    url = "https://www.youtube.com/watch?v=${activeBundle.videoId}",
-                    title = activeBundle.title,
-                    uploaderName = activeBundle.uploaderName,
-                    uploaderAvatarUrl = activeBundle.uploaderAvatarUrl,
-                    thumbnailUrl = activeBundle.thumbnailUrl,
-                    durationSeconds = activeBundle.durationSeconds,
-                )
-            )
-        }
-        _relatedVideos.value = activeBundle.relatedVideos
-        _uploaderSubscriberText.value = activeBundle.uploaderSubscriberText
-        currentUploaderUrl = activeBundle.uploaderUrl.orEmpty()
-        currentUploaderName = activeBundle.uploaderName
-        sessionPlayedVideoIds.add(activeBundle.videoId)
-
-        if (!activeBundle.uploaderAvatarUrl.isNullOrEmpty()) {
-            _channelAvatarUrl.value = activeBundle.uploaderAvatarUrl
-        }
-
-        // Pulihkan status suka, tidak suka, dan subscribe untuk video ini
-        _isLiked.value = syncRepository.isLikedLocally(activeBundle.videoId)
-        _isDisliked.value = syncRepository.isDislikedLocally(activeBundle.videoId)
-        _isSubscribed.value = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName)
-
-        // Muat komentar serta metadata video baru ini seketika jika belum ada
-        if (_comments.value.isEmpty()) {
-            loadComments()
-        }
-
-        watchNextJob?.cancel()
-        watchNextJob = viewModelScope.launch {
-            syncRepository.fetchWatchNextRelated(activeBundle.videoId).onSuccess { data ->
-                if (!data.viewCountText.isNullOrBlank()) {
-                    _videoViewsText.value = data.viewCountText
-                }
-                if (!data.uploadDateText.isNullOrBlank()) {
-                    _videoUploadDateText.value = data.uploadDateText
-                }
-                if (!data.commentCountText.isNullOrBlank()) {
-                    _commentCountText.value = data.commentCountText
-                }
-                if (!data.commentTeaserText.isNullOrBlank()) {
-                    _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
-                }
-                if (!data.subscriberText.isNullOrBlank()) {
-                    _uploaderSubscriberText.value = data.subscriberText
-                }
-                if (!data.channelId.isNullOrEmpty()) {
-                    currentChannelId = data.channelId
-                }
-                val localSub = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName) ||
-                    (!data.channelId.isNullOrEmpty() && syncRepository.isSubscribedLocally(data.channelId))
-                _isSubscribed.value = (data.isSubscribed == true) || localSub
-
-                val isLocalLiked = syncRepository.isLikedLocally(activeBundle.videoId)
-                val isLocalDisliked = syncRepository.isDislikedLocally(activeBundle.videoId)
-                if (isLocalLiked || data.likeStatus == "LIKE") {
-                    _isLiked.value = true
-                    _isDisliked.value = false
-                } else if (isLocalDisliked || data.likeStatus == "DISLIKE") {
-                    _isLiked.value = false
-                    _isDisliked.value = true
-                }
-                if (data.relatedVideos.isNotEmpty()) {
-                    _relatedVideos.value = (activeBundle.relatedVideos + data.relatedVideos).distinctBy { it.id }
-                    playerController.updateRelatedVideos(data.relatedVideos)
-                }
-                nextRelatedContinuation = data.nextContinuation
-            }
-        }
-
-        syncRepository.recordLocalWatchHistory(id.katube.data.model.VideoItem(
-            id = activeBundle.videoId,
-            url = "https://www.youtube.com/watch?v=${activeBundle.videoId}",
-            title = activeBundle.title,
-            uploaderName = activeBundle.uploaderName,
-            uploaderAvatarUrl = activeBundle.uploaderAvatarUrl,
-            uploaderUrl = activeBundle.uploaderUrl,
-            durationSeconds = activeBundle.durationSeconds,
-            viewCount = activeBundle.viewCount,
-            uploadDateText = activeBundle.uploadDateText,
-            thumbnailUrl = activeBundle.thumbnailUrl,
-        ))
     }
 
     private suspend fun getEffectiveMaxHeight(): Int {
@@ -301,13 +379,98 @@ class WatchViewModel @Inject constructor(
             activeBundle.selectedAudioUrl.isNotEmpty() ||
             !activeBundle.hlsUrl.isNullOrEmpty()
         )
-        if (activeBundle != null && activeBundle.videoId == id && hasPlayableMedia) {
-            syncWithActivePlayer(activeBundle)
+        if (activeBundle != null && activeBundle.videoId == id && playerController.player != null && hasPlayableMedia) {
+            currentVideoId = id
+            _uiState.value = WatchUiState.Success(activeBundle)
+            if (_relatedVideos.value.isEmpty()) {
+                _relatedVideos.value = activeBundle.relatedVideos
+            }
+            if (!activeBundle.uploaderAvatarUrl.isNullOrEmpty() && _channelAvatarUrl.value.isNullOrEmpty()) {
+                _channelAvatarUrl.value = activeBundle.uploaderAvatarUrl
+            }
+            _uploaderSubscriberText.value = activeBundle.uploaderSubscriberText
+            currentUploaderUrl = activeBundle.uploaderUrl.orEmpty()
+            currentUploaderName = activeBundle.uploaderName
+
+            // Pulihkan status suka & tidak suka langsung dari repositori
+            if (syncRepository.isLikedLocally(id)) {
+                _isLiked.value = true
+                _isDisliked.value = false
+            } else if (syncRepository.isDislikedLocally(id)) {
+                _isLiked.value = false
+                _isDisliked.value = true
+            } else {
+                _isLiked.value = false
+                _isDisliked.value = false
+            }
+
+            // Pulihkan status langganan saluran
+            _isSubscribed.value = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName)
+
+            // Sinkronkan data sekunder lanjutan dari YouTube di latar belakang tanpa menginterupsi pemutaran aktif
+            watchNextJob?.cancel()
+            watchNextJob = viewModelScope.launch {
+                syncRepository.fetchWatchNextRelated(id).onSuccess { data ->
+                    if (!data.viewCountText.isNullOrBlank()) {
+                        _videoViewsText.value = data.viewCountText
+                    }
+                    if (!data.uploadDateText.isNullOrBlank()) {
+                        _videoUploadDateText.value = data.uploadDateText
+                    }
+                    if (!data.commentCountText.isNullOrBlank()) {
+                        _commentCountText.value = data.commentCountText
+                    }
+                    if (!data.commentTeaserText.isNullOrBlank()) {
+                        _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
+                    }
+                    if (!data.subscriberText.isNullOrBlank()) {
+                        _uploaderSubscriberText.value = data.subscriberText
+                    }
+                    if (!data.channelAvatarUrl.isNullOrBlank()) {
+                        _channelAvatarUrl.value = data.channelAvatarUrl
+                    }
+                    currentCommentsToken = data.commentsContinuationToken
+                    if (!data.commentsContinuationToken.isNullOrEmpty() &&
+                        (_comments.value.isEmpty() || _comments.value.all { it.authorAvatarUrl.isNullOrEmpty() })
+                    ) {
+                        loadComments(data.commentsContinuationToken)
+                    }
+                    if (!data.channelId.isNullOrEmpty()) {
+                        currentChannelId = data.channelId
+                    }
+                    val localSub = checkSubscribedLocally(activeBundle.uploaderUrl, activeBundle.uploaderName) ||
+                        (!data.channelId.isNullOrEmpty() && syncRepository.isSubscribedLocally(data.channelId))
+                    _isSubscribed.value = (data.isSubscribed == true) || localSub
+
+                    val isLocalLiked = syncRepository.isLikedLocally(id)
+                    val isLocalDisliked = syncRepository.isDislikedLocally(id)
+                    if (isLocalLiked || data.likeStatus == "LIKE") {
+                        _isLiked.value = true
+                        _isDisliked.value = false
+                    } else if (isLocalDisliked || data.likeStatus == "DISLIKE") {
+                        _isLiked.value = false
+                        _isDisliked.value = true
+                    }
+                    if (data.relatedVideos.isNotEmpty()) {
+                        _relatedVideos.value = (activeBundle.relatedVideos + data.relatedVideos).distinctBy { it.id }
+                        playerController.updateRelatedVideos(data.relatedVideos)
+                    }
+                    nextRelatedContinuation = data.nextContinuation
+                }
+            }
+
+            loadComments()
             return
         }
 
         // Hentikan seketika pemutaran video sebelumnya agar audio langsung diam (0 ms) & jaringan tidak tersedot download video lama
         playerController.prepareForNewVideo(id)
+
+        // Sinkronkan indeks jika video yang diputar adalah bagian dari antrean aktif, pertahankan antrean pengguna
+        val qIdx = playerController.queue.value.indexOfFirst { it.id == id }
+        if (qIdx >= 0) {
+            playerController.setCurrentIndex(qIdx)
+        }
 
         if (addToHistory && currentVideoId.isNotEmpty() && currentVideoId != id) {
             playerController.recordHistory(currentVideoId)
@@ -347,14 +510,29 @@ class WatchViewModel @Inject constructor(
         watchNextJob?.cancel()
         watchNextJob = viewModelScope.launch {
             syncRepository.fetchWatchNextRelated(id).onSuccess { data ->
+                if (!data.viewCountText.isNullOrBlank()) {
+                    _videoViewsText.value = data.viewCountText
+                }
+                if (!data.uploadDateText.isNullOrBlank()) {
+                    _videoUploadDateText.value = data.uploadDateText
+                }
+                if (!data.commentCountText.isNullOrBlank()) {
+                    _commentCountText.value = data.commentCountText
+                }
                 if (!data.subscriberText.isNullOrBlank()) {
                     _uploaderSubscriberText.value = data.subscriberText
                 }
+                if (!data.channelAvatarUrl.isNullOrBlank()) {
+                    _channelAvatarUrl.value = data.channelAvatarUrl
+                }
+                currentCommentsToken = data.commentsContinuationToken
+                if (!data.commentsContinuationToken.isNullOrEmpty() &&
+                    (_comments.value.isEmpty() || _comments.value.all { it.authorAvatarUrl.isNullOrEmpty() })
+                ) {
+                    loadComments(data.commentsContinuationToken)
+                }
                 if (!data.channelId.isNullOrEmpty()) {
                     currentChannelId = data.channelId
-                }
-                if (!data.channelAvatarUrl.isNullOrEmpty()) {
-                    _channelAvatarUrl.value = data.channelAvatarUrl
                 }
                 if (!data.commentTeaserText.isNullOrEmpty()) {
                     _commentTeaser.value = data.commentTeaserText to data.commentTeaserAvatar
@@ -380,7 +558,7 @@ class WatchViewModel @Inject constructor(
             }.onFailure {
                 // Fallback jika fetchWatchNextRelated gagal: cari video terkait berdasarkan judul/artis agar daftar rekomendasi tidak kosong
                 if (_relatedVideos.value.isEmpty()) {
-                    val query = activeArtistKeyword ?: currentUploaderName.takeIf { it.isNotBlank() } ?: "lagu pop indonesia"
+                    val query = currentUploaderName.takeIf { it.isNotBlank() } ?: previewItem?.title?.takeIf { it.isNotBlank() }.orEmpty()
                     repository.search(query).onSuccess { list ->
                         val fallbackItems = list.filter { it.id != id }
                         if (fallbackItems.isNotEmpty()) {
@@ -479,11 +657,31 @@ class WatchViewModel @Inject constructor(
     }
 
     private fun applyAndPlayBundle(bundle: StreamBundle, addToHistory: Boolean = true, startPositionMs: Long = 0L) {
-        _uiState.value = WatchUiState.Success(bundle)
-        playerController.playVideo(bundle, addToHistory = addToHistory, startPositionMs = startPositionMs)
+        val mergedRelated = (bundle.relatedVideos + _relatedVideos.value).distinctBy { it.id }
+        val finalBundle = if (mergedRelated.isNotEmpty() && bundle.relatedVideos.size != mergedRelated.size) {
+            bundle.copy(relatedVideos = mergedRelated)
+        } else {
+            bundle
+        }
+        _uiState.value = WatchUiState.Success(finalBundle)
+        playerController.playVideo(finalBundle, addToHistory = addToHistory, startPositionMs = startPositionMs)
 
-        _relatedVideos.value = bundle.relatedVideos
-        _uploaderSubscriberText.value = bundle.uploaderSubscriberText
+        if (mergedRelated.isNotEmpty()) {
+            _relatedVideos.value = mergedRelated
+            playerController.updateRelatedVideos(mergedRelated)
+        }
+        if (!bundle.uploaderSubscriberText.isNullOrBlank()) {
+            _uploaderSubscriberText.value = bundle.uploaderSubscriberText
+        }
+        if (!bundle.uploaderAvatarUrl.isNullOrBlank()) {
+            _channelAvatarUrl.value = bundle.uploaderAvatarUrl
+        }
+        if (_videoViewsText.value.isNullOrBlank() && bundle.viewCount > 0) {
+            _videoViewsText.value = "${bundle.formattedViews} ditonton"
+        }
+        if (_videoUploadDateText.value.isNullOrBlank() && !bundle.uploadDateText.isNullOrBlank()) {
+            _videoUploadDateText.value = bundle.uploadDateText
+        }
         currentUploaderUrl = bundle.uploaderUrl.orEmpty()
         currentUploaderName = bundle.uploaderName
         nextRelatedContinuation = null
@@ -629,39 +827,7 @@ class WatchViewModel @Inject constructor(
         if (allCandidates.isEmpty()) return null
 
         val playedHistory = playerController.playbackHistory.toSet() + sessionPlayedVideoIds
-        val activeArtist = activeArtistKeyword?.trim()?.lowercase().orEmpty()
-
-        if (activeArtist.length >= 3) {
-            val scored = allCandidates.map { video ->
-                val titleLower = video.title.lowercase()
-                val uploaderLower = video.uploaderName.lowercase()
-                var score = 0
-
-                // 1. Kecocokan Artis (+10.000)
-                val matchesArtist = titleLower.contains(activeArtist) || uploaderLower.contains(activeArtist)
-                if (matchesArtist) {
-                    score += 10_000
-                    if (titleLower.contains(activeArtist)) score += 2_000
-                }
-
-                // 2. Kebaruan Video (Freshness Score +0 sampai +1000)
-                score += calculateFreshnessScore(video.uploadDateText)
-
-                // 3. Penalti jika sudah diputar baru-baru ini (-50.000)
-                if (playedHistory.contains(video.id)) {
-                    score -= 50_000
-                }
-
-                video to score
-            }.sortedByDescending { it.second }
-
-            // Ambil kandidat dengan skor tertinggi yang belum pernah diputar (skor > -40_000)
-            val bestCandidate = scored.firstOrNull { it.second > -40_000 }?.first
-            if (bestCandidate != null) return bestCandidate
-        }
-
-        // Fallback jika tidak ada artis yang cocok atau semua sudah diputar:
-        // Pilih kandidat pertama yang belum pernah diputar di riwayat sesi ini
+        // Mengikuti rekomendasi murni nomor 1 dari YouTube InnerTube yang belum diputar di sesi ini
         return allCandidates.firstOrNull { !playedHistory.contains(it.id) }
             ?: allCandidates.firstOrNull()
     }
@@ -746,7 +912,10 @@ class WatchViewModel @Inject constructor(
 
     fun playRelatedVideo(nextId: String) {
         val preview = _relatedVideos.value.find { it.id == nextId }
-        playerController.clearPlaylistQueue()
+        val qIdx = playerController.queue.value.indexOfFirst { it.id == nextId }
+        if (qIdx >= 0) {
+            playerController.setCurrentIndex(qIdx)
+        }
         loadVideo(nextId, addToHistory = true, previewItem = preview)
     }
 
@@ -814,26 +983,44 @@ class WatchViewModel @Inject constructor(
         playerController.play()
     }
 
-    fun loadComments() {
+    fun loadComments(forcedToken: String? = null) {
         if (currentVideoId.isEmpty()) return
+        val videoId = currentVideoId
+        val tokenToUse = forcedToken ?: currentCommentsToken
+        val localUserComments = syncRepository.getUserCommentsLocally(videoId)
+        if (localUserComments.isNotEmpty() && _comments.value.isEmpty()) {
+            _comments.value = localUserComments
+        }
         commentsJob?.cancel()
         commentsJob = viewModelScope.launch {
             _isLoadingComments.value = true
-            repository.getComments(currentVideoId).fold(
-                onSuccess = { list ->
-                    _comments.value = list
-                    _isLoadingComments.value = false
-                },
-                onFailure = {
-                    _isLoadingComments.value = false
-                }
-            )
+            // 1. Coba ambil dari syncRepository.fetchComments (InnerTube resmi, avatar asli pengguna)
+            val syncResult = syncRepository.fetchComments(videoId, tokenToUse)
+            val fetchedList = syncResult.getOrNull().orEmpty()
+            if (syncResult.isSuccess && fetchedList.isNotEmpty()) {
+                val merged = (localUserComments + fetchedList).distinctBy { it.id }
+                _comments.value = merged
+                _isLoadingComments.value = false
+            } else {
+                // 2. Fallback ke repository.getComments (NewPipe)
+                repository.getComments(videoId).fold(
+                    onSuccess = { list ->
+                        val merged = (localUserComments + list).distinctBy { it.id }
+                        _comments.value = merged
+                        _isLoadingComments.value = false
+                    },
+                    onFailure = {
+                        _isLoadingComments.value = false
+                    }
+                )
+            }
         }
     }
 
     fun addComment(text: String, onResult: ((Boolean, String) -> Unit)? = null) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
+        if (trimmed.isEmpty() || currentVideoId.isEmpty()) return
+        val videoId = currentVideoId
         viewModelScope.launch {
             val account = authRepository.account.first()
             val authorName = if (account.isLoggedIn && account.displayName.isNotBlank()) {
@@ -851,14 +1038,18 @@ class WatchViewModel @Inject constructor(
                 likeCount = 0,
                 isUserComment = true
             )
-            _comments.value = listOf(newComment) + _comments.value
-            syncRepository.postComment(currentVideoId, trimmed)
+            syncRepository.saveUserCommentLocally(videoId, newComment)
+            _comments.value = listOf(newComment) + _comments.value.filter { it.id != newComment.id }
+            _commentTeaser.value = newComment.text to newComment.authorAvatarUrl
+            syncRepository.postComment(videoId, trimmed)
             onResult?.invoke(true, "Komentar berhasil dikirim")
         }
     }
 
     fun deleteComment(commentId: String, onResult: ((Boolean, String) -> Unit)? = null) {
-        if (commentId.isEmpty()) return
+        if (commentId.isEmpty() || currentVideoId.isEmpty()) return
+        val videoId = currentVideoId
+        syncRepository.deleteUserCommentLocally(videoId, commentId)
         _comments.value = _comments.value.filter { it.id != commentId }
         viewModelScope.launch {
             syncRepository.deleteComment(commentId)
@@ -986,8 +1177,8 @@ class WatchViewModel @Inject constructor(
         }
     }
 
-    fun addVideoToPlaylist(playlistId: String, playlistName: String, onResult: ((Boolean, String) -> Unit)? = null) {
-        val videoId = currentVideoId
+    fun addVideoToPlaylist(playlistId: String, playlistName: String, targetVideoId: String? = null, onResult: ((Boolean, String) -> Unit)? = null) {
+        val videoId = targetVideoId ?: currentVideoId
         if (videoId.isEmpty()) return
         viewModelScope.launch {
             val res = syncRepository.addVideoToPlaylist(playlistId, videoId)
@@ -1000,6 +1191,10 @@ class WatchViewModel @Inject constructor(
                 }
             )
         }
+    }
+
+    fun removeRelatedVideo(videoId: String) {
+        _relatedVideos.value = _relatedVideos.value.filter { it.id != videoId }
     }
 
     fun setPlaybackSpeed(speed: Float) {

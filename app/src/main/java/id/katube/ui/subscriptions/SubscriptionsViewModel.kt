@@ -24,8 +24,15 @@ class SubscriptionsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val subscribedChannels: StateFlow<List<ChannelItem>> = syncRepository.subscribedChannels
-    val subscriptionFeed: StateFlow<List<VideoItem>> = syncRepository.subscriptionFeed
+    private val _hiddenVideoIds = kotlinx.coroutines.flow.MutableStateFlow<Set<String>>(emptySet())
+    val subscriptionFeed: StateFlow<List<VideoItem>> = kotlinx.coroutines.flow.combine(syncRepository.subscriptionFeed, _hiddenVideoIds) { feed, hidden ->
+        feed.filter { it.id !in hidden }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val isSyncing: StateFlow<Boolean> = syncRepository.isSyncing
+
+    fun removeVideo(videoId: String) {
+        _hiddenVideoIds.value = _hiddenVideoIds.value + videoId
+    }
 
     fun sync() {
         viewModelScope.launch {

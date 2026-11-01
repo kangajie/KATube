@@ -39,6 +39,13 @@ class PlaylistViewModel @Inject constructor(
         loadPlaylist()
     }
 
+    private fun sanitizePlaylist(playlist: PlaylistItem): PlaylistItem {
+        val cleanVideos = playlist.videos
+            .filter { it.id.length == 11 && !it.id.startsWith("RD") && !it.isMix }
+            .map { it.copy(isMix = false, playlistId = null) }
+        return playlist.copy(videos = cleanVideos)
+    }
+
     fun loadPlaylist() {
         viewModelScope.launch {
             _uiState.value = PlaylistUiState.Loading
@@ -57,13 +64,13 @@ class PlaylistViewModel @Inject constructor(
             if (isUserPlaylist || cleanId.equals("WL", ignoreCase = true) || cleanId.equals("LL", ignoreCase = true) || cleanId.startsWith("RD")) {
                 syncRepository.fetchPlaylistDetails(cleanId).fold(
                     onSuccess = { playlist ->
-                        _uiState.value = PlaylistUiState.Success(playlist)
+                        _uiState.value = PlaylistUiState.Success(sanitizePlaylist(playlist))
                     },
                     onFailure = { error ->
                         // Fallback ke repository jika diperlukan
                         val result = repository.getPlaylist(cleanId)
                         result.fold(
-                            onSuccess = { pl -> _uiState.value = PlaylistUiState.Success(pl) },
+                            onSuccess = { pl -> _uiState.value = PlaylistUiState.Success(sanitizePlaylist(pl)) },
                             onFailure = { _uiState.value = PlaylistUiState.Error(error.message ?: "Gagal memuat playlist") }
                         )
                     }
@@ -79,17 +86,17 @@ class PlaylistViewModel @Inject constructor(
                     if (playlist.videos.isEmpty()) {
                         val syncRes = syncRepository.fetchPlaylistDetails(cleanId)
                         if (syncRes.isSuccess && syncRes.getOrNull()?.videos?.isNotEmpty() == true) {
-                            _uiState.value = PlaylistUiState.Success(syncRes.getOrNull()!!)
+                            _uiState.value = PlaylistUiState.Success(sanitizePlaylist(syncRes.getOrNull()!!))
                             return@fold
                         }
                     }
-                    _uiState.value = PlaylistUiState.Success(playlist)
+                    _uiState.value = PlaylistUiState.Success(sanitizePlaylist(playlist))
                 },
                 onFailure = { extractorError ->
                     val syncRes = syncRepository.fetchPlaylistDetails(cleanId)
                     syncRes.fold(
                         onSuccess = { playlist ->
-                            _uiState.value = PlaylistUiState.Success(playlist)
+                            _uiState.value = PlaylistUiState.Success(sanitizePlaylist(playlist))
                         },
                         onFailure = {
                             _uiState.value = PlaylistUiState.Error(

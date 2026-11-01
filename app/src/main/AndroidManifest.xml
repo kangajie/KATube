@@ -61,6 +61,16 @@
             </intent-filter>
         </service>
 
+        <!-- MediaButtonReceiver untuk media kontrol Bluetooth / Headset -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
+
         <!-- Receiver untuk Notifikasi Rekomendasi Cerdas Sesuai Genre Pengguna (Harian & Saat Booting) -->
         <receiver
             android:name=".data.notification.RecommendationNotificationReceiver"

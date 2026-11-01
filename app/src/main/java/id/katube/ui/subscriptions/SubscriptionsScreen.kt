@@ -29,6 +29,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.remember
+import id.katube.core.util.CommentUtils
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Gamepad
@@ -179,9 +181,12 @@ fun SubscriptionsScreen(
                                         .clickable { onChannelClick(channel.id) },
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                 ) {
-                                    if (!channel.avatarUrl.isNullOrEmpty()) {
+                                    val cleanAvatar = remember(channel.avatarUrl) {
+                                        CommentUtils.sanitizeImageUrl(channel.avatarUrl)
+                                    }
+                                    if (!cleanAvatar.isNullOrEmpty()) {
                                         AsyncImage(
-                                            model = channel.avatarUrl,
+                                            model = cleanAvatar,
                                             contentDescription = channel.name,
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier
@@ -249,14 +254,21 @@ fun SubscriptionsScreen(
                         video = video,
                         onClick = {
                             mainViewModel.playerController.pendingPreviewItem = video
-                            onVideoClick(video.id)
+                            if (video.isMix && (!video.playlistId.isNullOrEmpty() || video.id.startsWith("RD"))) {
+                                mainViewModel.playMix(video) { targetId ->
+                                    onVideoClick(targetId)
+                                }
+                            } else {
+                                onVideoClick(video.id)
+                            }
                         },
                         onPlayInBackground = {
-                            mainViewModel.playerController.playInBackground(video.id)
+                            mainViewModel.playerController.playInBackground(video.id, preview = video)
                         },
                         onPlayInPopup = {
                             mainViewModel.playerController.pendingPreviewItem = video
                             onVideoClick(video.id)
+                            (context as? id.katube.MainActivity)?.enterPipMode()
                         },
                         onPlayNext = {
                             mainViewModel.playerController.addToQueueNext(video)
@@ -265,6 +277,17 @@ fun SubscriptionsScreen(
                         onAddToQueue = {
                             mainViewModel.playerController.addToQueue(video)
                             android.widget.Toast.makeText(context, "Ditambahkan ke antrean", android.widget.Toast.LENGTH_SHORT).show()
+                        },
+                        onAddToPlaylist = {
+                            mainViewModel.openAddToPlaylist(video)
+                        },
+                        onAddToWatchLater = {
+                            mainViewModel.addToWatchLater(video) { _, msg ->
+                                android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onNotInterested = {
+                            viewModel.removeVideo(video.id)
                         },
                     )
                 }

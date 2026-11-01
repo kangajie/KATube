@@ -39,6 +39,27 @@ class ChannelViewModel @Inject constructor(
     private val _uiState = MutableStateFlow<ChannelUiState>(ChannelUiState.Loading)
     val uiState: StateFlow<ChannelUiState> = _uiState.asStateFlow()
 
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _isSearchActive = MutableStateFlow(false)
+    val isSearchActive: StateFlow<Boolean> = _isSearchActive.asStateFlow()
+
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+
+    fun toggleSearch() {
+        _isSearchActive.value = !_isSearchActive.value
+        if (!_isSearchActive.value) {
+            _searchQuery.value = ""
+        }
+    }
+
+    fun clearSearch() {
+        _searchQuery.value = ""
+    }
+
     val isSubscribed: StateFlow<Boolean> = syncRepository.subscribedChannels
         .map { list ->
             val cleanTarget = if (channelId.startsWith("http")) channelId.substringAfterLast("/") else channelId
@@ -47,6 +68,8 @@ class ChannelViewModel @Inject constructor(
             }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    private var loadJob: kotlinx.coroutines.Job? = null
 
     init {
         if (channelId.isNotBlank()) {
@@ -70,20 +93,39 @@ class ChannelViewModel @Inject constructor(
         }
     }
 
-    fun loadChannel(targetId: String = channelId) {
+    fun removeVideo(videoId: String) {
+        val current = _uiState.value
+        if (current is ChannelUiState.Success) {
+            val updatedVideos = current.channel.videos.filter { it.id != videoId }
+            _uiState.value = ChannelUiState.Success(current.channel.copy(videos = updatedVideos))
+        }
+    }
+
+    fun loadChannel(targetId: String = channelId, forceReload: Boolean = false) {
         val idToLoad = targetId.ifEmpty { channelId }
         if (idToLoad.isBlank()) return
-        viewModelScope.launch {
-            _uiState.value = ChannelUiState.Loading
+
+        val currentState = _uiState.value
+        if (!forceReload && currentState is ChannelUiState.Success && (currentState.channel.id == idToLoad || currentState.channel.url.contains(idToLoad))) {
+            return
+        }
+
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
+            if (_uiState.value !is ChannelUiState.Success) {
+                _uiState.value = ChannelUiState.Loading
+            }
             val result = repository.getChannel(idToLoad)
             result.fold(
                 onSuccess = { channel ->
                     _uiState.value = ChannelUiState.Success(channel)
                 },
                 onFailure = { error ->
-                    _uiState.value = ChannelUiState.Error(
-                        error.message ?: "Gagal memuat profil channel"
-                    )
+                    if (_uiState.value !is ChannelUiState.Success) {
+                        _uiState.value = ChannelUiState.Error(
+                            error.message ?: "Gagal memuat profil channel"
+                        )
+                    }
                 }
             )
         }

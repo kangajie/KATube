@@ -87,6 +87,19 @@ object StreamSelector {
 
         val isLiveStream = info.streamType == StreamType.LIVE_STREAM && info.duration <= 0
 
+        val rawLiveAvatar = info.uploaderAvatars?.lastOrNull()?.url
+            ?: info.uploaderAvatars?.firstOrNull()?.url
+            ?: info.subChannelAvatars?.lastOrNull()?.url
+            ?: info.subChannelAvatars?.firstOrNull()?.url
+        val cleanLiveAvatar = rawLiveAvatar?.let {
+            val trimmed = it.trim()
+            when {
+                trimmed.startsWith("//") -> "https:$trimmed"
+                trimmed.startsWith("http://") -> "https://" + trimmed.substringAfter("http://")
+                else -> trimmed
+            }
+        }
+
         // 1. Penanganan Khusus Live Stream YouTube:
         // Live stream memuat video dan audio di playlist HLS m3u8 tanpa stream audio progresif terpisah.
         if (isLiveStream && !info.hlsUrl.isNullOrEmpty()) {
@@ -95,7 +108,7 @@ object StreamSelector {
                 videoId = videoId,
                 title = info.name.orEmpty(),
                 uploaderName = info.uploaderName.orEmpty(),
-                uploaderAvatarUrl = info.uploaderAvatars?.lastOrNull()?.url ?: info.uploaderAvatars?.firstOrNull()?.url,
+                uploaderAvatarUrl = cleanLiveAvatar,
                 uploaderUrl = info.uploaderUrl,
                 thumbnailUrl = info.thumbnails?.lastOrNull()?.url
                     ?: info.thumbnails?.firstOrNull()?.url
@@ -247,11 +260,24 @@ object StreamSelector {
         val actualIsUsingMuxed = (selectedVideo != null && muxedStreams.contains(selectedVideo))
         val audioUrl = if (actualIsUsingMuxed) "" else (audio?.content.orEmpty().ifEmpty { candidateMuxed?.content.orEmpty() })
 
+        val rawAvatar = info.uploaderAvatars?.lastOrNull()?.url
+            ?: info.uploaderAvatars?.firstOrNull()?.url
+            ?: info.subChannelAvatars?.lastOrNull()?.url
+            ?: info.subChannelAvatars?.firstOrNull()?.url
+        val cleanAvatar = rawAvatar?.let {
+            val trimmed = it.trim()
+            when {
+                trimmed.startsWith("//") -> "https:$trimmed"
+                trimmed.startsWith("http://") -> "https://" + trimmed.substringAfter("http://")
+                else -> trimmed
+            }
+        }
+
         return StreamBundle(
             videoId = videoId,
             title = info.name.orEmpty(),
             uploaderName = info.uploaderName.orEmpty(),
-            uploaderAvatarUrl = info.uploaderAvatars?.lastOrNull()?.url ?: info.uploaderAvatars?.firstOrNull()?.url,
+            uploaderAvatarUrl = cleanAvatar,
             uploaderUrl = info.uploaderUrl,
             thumbnailUrl = info.thumbnails?.lastOrNull()?.url
                 ?: info.thumbnails?.firstOrNull()?.url

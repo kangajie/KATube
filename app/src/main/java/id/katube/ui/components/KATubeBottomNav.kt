@@ -4,7 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
@@ -36,10 +40,17 @@ fun KATubeBottomNav(
     avatarUrl: String? = null,
     isLoggedIn: Boolean = false,
 ) {
+    // Menyesuaikan otomatis tinggi bottom bar dengan tinggi bar navigasi HP (baik 3 tombol fisik/virtual maupun navigasi gestur)
+    val navBarBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val baseContentHeight = 52.dp
+
     NavigationBar(
-        modifier = Modifier.height(56.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(baseContentHeight + navBarBottomPadding),
         containerColor = MaterialTheme.colorScheme.surface,
         tonalElevation = 0.dp,
+        windowInsets = WindowInsets.navigationBars,
     ) {
         bottomNavItems.forEach { item ->
             val isSelected = currentRoute == item.screen.route
